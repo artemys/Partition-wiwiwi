@@ -806,5 +806,9 @@ def render_musicxml_to_pdf(musicxml_path: str, pdf_path: str, logger) -> None:
             musicxml_path,
         ],
         logger,
+        env={
+            "QT_QPA_PLATFORM": "offscreen",
+            "DISPLAY": ":0",
+        },
     )
 

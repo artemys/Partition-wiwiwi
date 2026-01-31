@@ -42,6 +42,7 @@ def run_cmd(
     logger: logging.Logger,
     timeout_seconds: Optional[int] = None,
     cwd: Optional[str] = None,
+    env: Optional[dict[str, str]] = None,
 ) -> None:
     logger.info("Command: %s", " ".join(args))
     try:
@@ -52,6 +53,7 @@ def run_cmd(
             text=True,
             timeout=timeout_seconds or SETTINGS.subprocess_timeout_seconds,
             check=False,
+            env={**os.environ, **(env or {})},
         )
     except subprocess.TimeoutExpired as exc:
         logger.error("Timeout: %s", exc)
