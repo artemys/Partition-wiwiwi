@@ -1,0 +1,52 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      - TABSERVER_REDIS_URL=${TABSERVER_REDIS_URL:-redis://redis:6379/0}
+      - TABSERVER_PUBLIC_URL=${TABSERVER_PUBLIC_URL:-http://localhost:8000}
+      - TABSERVER_MSCORE=${TABSERVER_MSCORE:-mscore}
+      - TABSERVER_DB_URL=${TABSERVER_DB_URL:-sqlite:////app/server/data/tabscore.db}
+      - TABSERVER_DATA_DIR=${TABSERVER_DATA_DIR:-/app/server/data}
+    volumes:
+      - ./server/data:/app/server/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    command: ["python", "-m", "server.worker"]
+    environment:
+      - TABSERVER_REDIS_URL=${TABSERVER_REDIS_URL:-redis://redis:6379/0}
+      - TABSERVER_MSCORE=${TABSERVER_MSCORE:-mscore}
+      - TABSERVER_DB_URL=${TABSERVER_DB_URL:-sqlite:////app/server/data/tabscore.db}
+      - TABSERVER_DATA_DIR=${TABSERVER_DATA_DIR:-/app/server/data}
+    volumes:
+      - ./server/data:/app/server/data
+    depends_on:
+      - redis
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api

@@ -1,36 +1,54 @@
-# TabScore
+# TabScore (Web)
 
-Application Android (Kotlin/Compose) pour transcrire un audio ou un lien YouTube en partition ou tablature.
+Application web pour transcrire un audio ou un lien YouTube en tablature et/ou partition.
 
-## Démarrage Android
+## Structure
 
-1. Ouvrir le projet dans Android Studio.
-2. Lancer l’app sur un émulateur ou un device.
+- `/server` : API FastAPI + worker RQ
+- `/web` : front-end Next.js (App Router)
+- `/android_legacy` : archive de l’ancienne app Android
 
-### Configuration backend
+## Démarrage rapide (local)
 
-Dans `app/build.gradle.kts` :
+### Backend
 
-- `USE_FAKE_BACKEND = true` pour l’API mockée locale.
-- `BASE_URL = "http://10.0.2.2:8000/"` pour pointer le backend `server/` (émulateur).
+Voir `server/README.md` pour les prérequis (ffmpeg, Redis, MuseScore, etc.).
 
-## Tests
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r server/requirements.txt
+export TABSERVER_PUBLIC_URL=http://localhost:8000
+uvicorn server.main:app --reload --port 8000
+```
 
-- Unit tests: `./gradlew test`
-- Tests instrumentés: `./gradlew connectedAndroidTest`
+Dans un second terminal :
 
-## Backend (Option B)
+```bash
+python -m server.worker
+```
 
-Voir `server/README.md` pour démarrer FastAPI.
+### Frontend
 
-## Exports
+```bash
+cd web
+pnpm install
+pnpm dev
+```
 
-Les fichiers générés sont enregistrés dans le répertoire de l’app :
-`Android/data/com.tabscore.app/files/Download/`
+Ouvrir `http://localhost:3000`.
 
-## Limites connues
+## Docker (API + Web)
 
-- Rendu MusicXML affiché sous forme de texte (pas de rendu graphique).
-- Pas d’extraction audio côté app pour YouTube (délégué au backend).
-- Progression simulée pour la version mockée.
-- Options guitare (accordage/capo/mode) gérées côté app et transmises au backend.
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+## Variables d’environnement
+
+Voir `.env.example` pour la liste complète.
+
+## Android legacy
+
+Le projet Android d’origine est archivé dans `/android_legacy`.

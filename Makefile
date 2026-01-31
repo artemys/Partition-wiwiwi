@@ -1,4 +1,4 @@
-.PHONY: help venv install redis-start redis-stop redis-restart api worker ngrok restart-all kill-all
+.PHONY: help venv install redis-start redis-stop redis-restart api worker ngrok restart-all kill-all dev web
 
 SHELL := /bin/bash
 VENV := .venv
@@ -18,6 +18,8 @@ help:
 	@echo "  ngrok          Start ngrok tunnel on 8000"
 	@echo "  kill-all       Kill api/worker/ffmpeg/ngrok"
 	@echo "  restart-all    Restart redis + api + worker"
+	@echo "  web            Run Next.js frontend"
+	@echo "  dev            Run docker compose stack"
 
 venv:
 	python3 -m venv $(VENV)
@@ -43,6 +45,9 @@ worker:
 	source $(VENV)/bin/activate && \
 	python -m server.worker
 
+web:
+	cd web && pnpm dev
+
 ngrok:
 	ngrok http 8000
 
@@ -59,3 +64,6 @@ restart-all: kill-all redis-restart
 	sleep 1
 	source $(VENV)/bin/activate && \
 	python -m server.worker
+
+dev:
+	docker compose up --build

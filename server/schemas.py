@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field
 
 class CreateJobResponse(BaseModel):
     jobId: str
-    status: str
 
 
 class JobStatusResponse(BaseModel):
@@ -38,4 +37,20 @@ class JobResultResponse(BaseModel):
 
 class YoutubeRequest(BaseModel):
     youtubeUrl: str
+
+
+class LibraryItem(BaseModel):
+    jobId: str
+    status: str
+    createdAt: Optional[str] = None
+    outputType: Optional[str] = None
+    confidence: Optional[float] = None
+    title: Optional[str] = None
+    sourceUrl: Optional[str] = None
+
+
+class LibraryResponse(BaseModel):
+    items: List[LibraryItem]
+    total: Optional[int] = None
+    nextCursor: Optional[str] = None
 

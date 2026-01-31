@@ -9,14 +9,24 @@ from fastapi import Body, FastAPI, File, UploadFile, Query, HTTPException, Reque
 from fastapi.responses import FileResponse
 
 from .config import SETTINGS
+from .auth import install_auth_middleware
 from .db import SessionLocal, init_db
 from .models import Job
-from .schemas import CreateJobResponse, JobMetadata, JobResultResponse, JobStatusResponse, YoutubeRequest
+from .schemas import (
+    CreateJobResponse,
+    JobMetadata,
+    JobResultResponse,
+    JobStatusResponse,
+    LibraryItem,
+    LibraryResponse,
+    YoutubeRequest,
+)
 from .pipeline import render_musicxml_to_pdf
 from .tasks import process_job
 from .utils import ensure_dir, get_job_logger
 
 app = FastAPI(title="TabScore Backend")
+install_auth_middleware(app)
 
 ensure_dir(SETTINGS.data_dir)
 
@@ -165,7 +175,7 @@ async def create_job(
     db.close()
 
     _queue().enqueue(process_job, job_id, job_timeout=SETTINGS.job_timeout_seconds)
-    return CreateJobResponse(jobId=job_id, status="PENDING")
+    return CreateJobResponse(jobId=job_id)
 
 
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
@@ -297,3 +307,34 @@ def delete_job(job_id: str):
                 os.rmdir(os.path.join(root, name))
         os.rmdir(job_dir)
     return {"status": "DELETED"}
+
+
+@app.get("/library", response_model=LibraryResponse)
+def get_library(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    db = SessionLocal()
+    base_query = db.query(Job).filter(Job.status.in_(["DONE", "FAILED"]))
+    total = base_query.count()
+    jobs = (
+        base_query.order_by(Job.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    items = [
+        LibraryItem(
+            jobId=job.id,
+            status=job.status,
+            createdAt=job.created_at.isoformat() if job.created_at else None,
+            outputType=job.output_type,
+            confidence=job.confidence,
+            title=job.input_filename if job.input_filename else None,
+            sourceUrl=job.source_url,
+        )
+        for job in jobs
+    ]
+    next_cursor = str(offset + limit) if offset + limit < total else None
+    db.close()
+    return LibraryResponse(items=items, total=total, nextCursor=next_cursor)
