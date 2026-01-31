@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from typing import List, Optional
+from typing import List, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -17,9 +17,11 @@ from .pipeline import (
     load_midi_notes,
     map_notes_to_tab,
     post_process_notes,
+    render_musicxml_to_pdf,
     run_basic_pitch,
     run_demucs,
     trim_wav,
+    write_tab_musicxml,
     write_tab_outputs,
 )
 from .utils import ensure_dir, get_job_logger
@@ -45,17 +47,14 @@ def _stage(db: Session, job_id: str, stage: str, progress: int, logger, message:
     _update_job(db, job_id, stage=stage, progress=progress, status="RUNNING")
 
 
-def _maybe_export_musicxml(midi_path: str, output_path: str, warnings: List[str], logger) -> Optional[str]:
-    try:
-        import music21  # type: ignore
-
-        score = music21.converter.parse(midi_path)
-        score.write("musicxml", fp=output_path)
-        return output_path
-    except Exception as exc:  # noqa: BLE001
-        warnings.append("MusicXML beta indisponible.")
-        logger.info("MusicXML export failed: %s", exc)
-        return None
+def _derive_title_artist(job: Job) -> Tuple[str, str]:
+    title = "Transcription"
+    artist = "Artiste inconnu"
+    if job.input_filename:
+        title = os.path.splitext(os.path.basename(job.input_filename))[0] or title
+    if job.source_url:
+        artist = "YouTube"
+    return title, artist
 
 
 def process_job(job_id: str) -> None:
@@ -164,9 +163,20 @@ def process_job(job_id: str) -> None:
         )
 
         _stage(db, job_id, "EXPORT", 95, logger, "Export des fichiers.")
-        musicxml_path = None
-        if job.output_type in ("score", "both"):
-            musicxml_path = _maybe_export_musicxml(midi_path, os.path.join(output_dir, "score.musicxml"), warnings, logger)
+        title, artist = _derive_title_artist(job)
+        musicxml_path = os.path.join(output_dir, "result.musicxml")
+        write_tab_musicxml(
+            tab_notes=tab_notes,
+            tuning=job.tuning,
+            capo=job.capo,
+            tempo_bpm=tempo_bpm,
+            title=title,
+            artist=artist,
+            annotations=None,
+            output_path=musicxml_path,
+        )
+        pdf_path = os.path.join(output_dir, "result.pdf")
+        render_musicxml_to_pdf(musicxml_path, pdf_path, logger)
 
         confidence = compute_confidence(metrics, processed)
 
@@ -185,6 +195,7 @@ def process_job(job_id: str) -> None:
             tab_txt_path=tab_txt_path,
             tab_json_path=tab_json_path,
             musicxml_path=musicxml_path,
+            pdf_path=pdf_path,
             midi_path=midi_path,
         )
     except Exception as exc:  # noqa: BLE001

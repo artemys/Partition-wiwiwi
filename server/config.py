@@ -18,6 +18,7 @@ class Settings:
     yt_dlp_path: str = os.getenv("TABSERVER_YTDLP", "yt-dlp")
     demucs_path: str = os.getenv("TABSERVER_DEMUCS", "demucs")
     basic_pitch_path: str = os.getenv("TABSERVER_BASIC_PITCH", "basic-pitch")
+    musescore_path: str = os.getenv("TABSERVER_MSCORE", "mscore")
     default_tempo_bpm: int = int(os.getenv("TABSERVER_DEFAULT_TEMPO_BPM", "120"))
 
 
@@ -38,5 +39,6 @@ SETTINGS = Settings(
     yt_dlp_path=_raw.yt_dlp_path,
     demucs_path=_raw.demucs_path,
     basic_pitch_path=_raw.basic_pitch_path,
+    musescore_path=_raw.musescore_path,
     default_tempo_bpm=_raw.default_tempo_bpm,
 )

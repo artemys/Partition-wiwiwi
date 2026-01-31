@@ -1,5 +1,6 @@
 import math
 import os
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -60,7 +61,13 @@ def parse_tuning(tuning: str, capo: int) -> Tuple[List[int], Optional[str]]:
 
 def ensure_dependencies(require_youtube: bool = False) -> None:
     missing = []
-    for tool in (SETTINGS.ffmpeg_path, SETTINGS.ffprobe_path, SETTINGS.basic_pitch_path, SETTINGS.demucs_path):
+    for tool in (
+        SETTINGS.ffmpeg_path,
+        SETTINGS.ffprobe_path,
+        SETTINGS.basic_pitch_path,
+        SETTINGS.demucs_path,
+        SETTINGS.musescore_path,
+    ):
         from shutil import which
 
         if which(tool) is None:
@@ -296,15 +303,15 @@ def assign_chord(
     notes: List[NoteEvent],
     open_strings: List[int],
     last_positions: Dict[int, int],
-) -> Dict[NoteEvent, Tuple[int, int]]:
+) -> Dict[int, Tuple[int, int]]:
     best_cost = float("inf")
-    best_assignment: Dict[NoteEvent, Tuple[int, int]] = {}
+    best_assignment: Dict[int, Tuple[int, int]] = {}
 
     candidates = [possible_positions(n.pitch, open_strings) for n in notes]
     if any(len(c) == 0 for c in candidates):
         return {}
 
-    def recurse(i: int, used_strings: set, current_cost: float, assignment: Dict[NoteEvent, Tuple[int, int]]):
+    def recurse(i: int, used_strings: set, current_cost: float, assignment: Dict[int, Tuple[int, int]]):
         nonlocal best_cost, best_assignment
         if i >= len(notes):
             if current_cost < best_cost:
@@ -313,7 +320,6 @@ def assign_chord(
             return
         if current_cost >= best_cost:
             return
-        note = notes[i]
         for string_idx, fret in candidates[i]:
             if string_idx in used_strings:
                 continue
@@ -321,9 +327,9 @@ def assign_chord(
             move_cost = abs(fret - last_fret) if last_fret is not None else 0
             penalty = 5 if fret > 20 else 0
             total = current_cost + move_cost + penalty
-            assignment[note] = (string_idx, fret)
+            assignment[i] = (string_idx, fret)
             recurse(i + 1, used_strings | {string_idx}, total, assignment)
-            assignment.pop(note, None)
+            assignment.pop(i, None)
 
     recurse(0, set(), 0.0, {})
     return best_assignment
@@ -360,7 +366,8 @@ def map_notes_to_tab(
                     )
                 )
             continue
-        for note, (string_idx, fret) in assignment.items():
+        for note_idx, (string_idx, fret) in assignment.items():
+            note = group[note_idx]
             last_positions[string_idx] = fret
             tab_notes.append(
                 TabNote(
@@ -472,4 +479,332 @@ def write_tab_outputs(
         f.write(tab_txt)
     tab_json = render_tab_json(tab_notes, tuning, capo, quality, tempo_bpm, tempo_source, warnings)
     write_json(tab_json_path, tab_json)
+
+
+def _midi_to_pitch(midi: int) -> Tuple[str, int, int]:
+    steps = ["C", "C", "D", "D", "E", "F", "F", "G", "G", "A", "A", "B"]
+    alters = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0]
+    step = steps[midi % 12]
+    alter = alters[midi % 12]
+    octave = midi // 12 - 1
+    return step, alter, octave
+
+
+def _duration_pieces(duration_div: int, divisions: int) -> List[int]:
+    if duration_div <= 0:
+        return []
+    whole = divisions * 4
+    half = divisions * 2
+    quarter = divisions
+    eighth = max(1, divisions // 2)
+    sixteenth = max(1, divisions // 4)
+    values = [whole, half, quarter, eighth, sixteenth]
+    pieces: List[int] = []
+    remaining = duration_div
+    while remaining > 0:
+        for value in values:
+            if value <= remaining:
+                pieces.append(value)
+                remaining -= value
+                break
+    return pieces
+
+
+def _duration_type(duration_div: int, divisions: int) -> str:
+    mapping = {
+        divisions * 4: "whole",
+        divisions * 2: "half",
+        divisions: "quarter",
+        max(1, divisions // 2): "eighth",
+        max(1, divisions // 4): "16th",
+    }
+    return mapping.get(duration_div, "quarter")
+
+
+def _format_tuning_label(open_strings: List[int]) -> str:
+    names: List[str] = []
+    for idx, midi in enumerate(reversed(open_strings), start=1):
+        step, alter, _ = _midi_to_pitch(midi)
+        note = step + ("#" if alter == 1 else "")
+        names.append(f"{idx} - {note}")
+    return "Accordage: " + ", ".join(names)
+
+
+def _indent_xml(elem: ET.Element, level: int = 0) -> None:
+    indent = "\n" + level * "  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = indent + "  "
+        for child in elem:
+            _indent_xml(child, level + 1)
+        if not child.tail or not child.tail.strip():
+            child.tail = indent
+    if level and (not elem.tail or not elem.tail.strip()):
+        elem.tail = indent
+
+
+def write_tab_musicxml(
+    tab_notes: List[TabNote],
+    tuning: str,
+    capo: int,
+    tempo_bpm: float,
+    title: str,
+    artist: str,
+    annotations: Optional[List[Dict[str, str]]],
+    output_path: str,
+) -> None:
+    open_strings, _ = parse_tuning(tuning, capo)
+    divisions = 4
+    seconds_per_beat = 60.0 / tempo_bpm
+    total_duration = max((n.timeStart + n.duration for n in tab_notes), default=0.0)
+    total_beats = total_duration / seconds_per_beat if seconds_per_beat else 0.0
+    measure_div = divisions * 4
+    measure_count = max(1, int(math.ceil(total_beats / 4.0))) if total_beats else 1
+
+    events: Dict[Tuple[int, int], Dict[str, object]] = {}
+    for note in tab_notes:
+        start_div = int(round(note.timeStart / seconds_per_beat * divisions))
+        duration_div = max(1, int(round(note.duration / seconds_per_beat * divisions)))
+        remaining = duration_div
+        current_start = start_div
+        segment_index = 0
+        while remaining > 0:
+            measure_idx = current_start // measure_div
+            offset = current_start % measure_div
+            available = measure_div - offset
+            segment_duration = min(remaining, available)
+            has_more = remaining > segment_duration
+            if duration_div > segment_duration:
+                if segment_index == 0 and has_more:
+                    tie_start = True
+                    tie_stop = False
+                elif has_more:
+                    tie_start = True
+                    tie_stop = True
+                else:
+                    tie_start = False
+                    tie_stop = True
+            else:
+                tie_start = False
+                tie_stop = False
+            key = (measure_idx, offset)
+            if key not in events:
+                events[key] = {"notes": [], "duration": segment_duration, "tie_start": False, "tie_stop": False}
+            events[key]["notes"].append(note)
+            events[key]["duration"] = max(int(events[key]["duration"]), segment_duration)
+            events[key]["tie_start"] = bool(events[key]["tie_start"]) or tie_start
+            events[key]["tie_stop"] = bool(events[key]["tie_stop"]) or tie_stop
+            remaining -= segment_duration
+            current_start += segment_duration
+            segment_index += 1
+
+    annotations = annotations or []
+    annotations_by_measure: Dict[int, List[Dict[str, str]]] = {}
+    for item in annotations:
+        try:
+            ts = float(item.get("timeStart", 0))
+        except (TypeError, ValueError):
+            ts = 0.0
+        idx = int((ts / seconds_per_beat) // 4) if seconds_per_beat else 0
+        annotations_by_measure.setdefault(idx, []).append(item)
+
+    score = ET.Element("score-partwise", version="3.1")
+    work = ET.SubElement(score, "work")
+    ET.SubElement(work, "work-title").text = title or "Transcription"
+    identification = ET.SubElement(score, "identification")
+    ET.SubElement(identification, "creator", type="composer").text = artist or "Artiste inconnu"
+    defaults = ET.SubElement(score, "defaults")
+    page_layout = ET.SubElement(defaults, "page-layout")
+    ET.SubElement(page_layout, "page-height").text = "1683.78"
+    ET.SubElement(page_layout, "page-width").text = "1190.55"
+    margins = ET.SubElement(page_layout, "page-margins", type="both")
+    ET.SubElement(margins, "left-margin").text = "70"
+    ET.SubElement(margins, "right-margin").text = "70"
+    ET.SubElement(margins, "top-margin").text = "70"
+    ET.SubElement(margins, "bottom-margin").text = "70"
+
+    credit = ET.SubElement(score, "credit")
+    credit_words = ET.SubElement(
+        credit,
+        "credit-words",
+        default_x="1120",
+        default_y="1600",
+        justify="right",
+    )
+    credit_words.text = _format_tuning_label(open_strings)
+
+    part_list = ET.SubElement(score, "part-list")
+    score_part = ET.SubElement(part_list, "score-part", id="P1")
+    ET.SubElement(score_part, "part-name").text = "Guitare"
+
+    part = ET.SubElement(score, "part", id="P1")
+    section_labels = ["A", "B", "C", "D", "E"]
+
+    for measure_idx in range(measure_count):
+        measure = ET.SubElement(part, "measure", number=str(measure_idx + 1))
+        if measure_idx == 0:
+            attributes = ET.SubElement(measure, "attributes")
+            ET.SubElement(attributes, "divisions").text = str(divisions)
+            key = ET.SubElement(attributes, "key")
+            ET.SubElement(key, "fifths").text = "0"
+            time = ET.SubElement(attributes, "time")
+            ET.SubElement(time, "beats").text = "4"
+            ET.SubElement(time, "beat-type").text = "4"
+            clef = ET.SubElement(attributes, "clef")
+            ET.SubElement(clef, "sign").text = "TAB"
+            ET.SubElement(clef, "line").text = "5"
+            staff_details = ET.SubElement(attributes, "staff-details")
+            ET.SubElement(staff_details, "staff-lines").text = "6"
+            for line_idx, midi in enumerate(reversed(open_strings), start=1):
+                step, alter, octave = _midi_to_pitch(midi)
+                tuning_el = ET.SubElement(staff_details, "staff-tuning", line=str(line_idx))
+                ET.SubElement(tuning_el, "tuning-step").text = step
+                if alter:
+                    ET.SubElement(tuning_el, "tuning-alter").text = str(alter)
+                ET.SubElement(tuning_el, "tuning-octave").text = str(octave)
+            direction = ET.SubElement(measure, "direction", placement="above")
+            direction_type = ET.SubElement(direction, "direction-type")
+            metronome = ET.SubElement(direction_type, "metronome")
+            ET.SubElement(metronome, "beat-unit").text = "quarter"
+            ET.SubElement(metronome, "per-minute").text = str(int(round(tempo_bpm)))
+            ET.SubElement(direction, "sound", tempo=str(int(round(tempo_bpm))))
+
+        if measure_idx < len(section_labels):
+            direction = ET.SubElement(measure, "direction", placement="above")
+            direction_type = ET.SubElement(direction, "direction-type")
+            ET.SubElement(direction_type, "rehearsal").text = section_labels[measure_idx]
+
+        for annotation in annotations_by_measure.get(measure_idx, []):
+            text = (annotation.get("text") or "").strip()
+            if not text:
+                continue
+            direction = ET.SubElement(measure, "direction", placement="above")
+            direction_type = ET.SubElement(direction, "direction-type")
+            ET.SubElement(direction_type, "words").text = text
+
+        measure_events = [
+            (offset, events[(measure_idx, offset)])
+            for (idx, offset) in events.keys()
+            if idx == measure_idx
+        ]
+        measure_events.sort(key=lambda item: item[0])
+        items: List[Dict[str, object]] = []
+        cursor = 0
+        for offset, payload in measure_events:
+            duration = int(payload["duration"])
+            if offset > cursor:
+                items.append({"kind": "rest", "duration": offset - cursor})
+            remaining = max(0, measure_div - offset)
+            duration = min(duration, remaining)
+            if duration > 0:
+                items.append(
+                    {
+                        "kind": "event",
+                        "duration": duration,
+                        "notes": payload["notes"],
+                        "tie_start": payload.get("tie_start", False),
+                        "tie_stop": payload.get("tie_stop", False),
+                    }
+                )
+                cursor = offset + duration
+        if cursor < measure_div:
+            items.append({"kind": "rest", "duration": measure_div - cursor})
+
+        beam_status: Dict[int, str] = {}
+        group: List[int] = []
+        for idx, item in enumerate(items):
+            if item["kind"] == "event" and int(item["duration"]) <= max(1, divisions // 2):
+                group.append(idx)
+            else:
+                if len(group) >= 2:
+                    beam_status[group[0]] = "begin"
+                    for mid in group[1:-1]:
+                        beam_status[mid] = "continue"
+                    beam_status[group[-1]] = "end"
+                group = []
+        if len(group) >= 2:
+            beam_status[group[0]] = "begin"
+            for mid in group[1:-1]:
+                beam_status[mid] = "continue"
+            beam_status[group[-1]] = "end"
+
+        for item_idx, item in enumerate(items):
+            duration = int(item["duration"])
+            pieces = _duration_pieces(duration, divisions)
+            if item["kind"] == "rest":
+                for piece in pieces:
+                    note_el = ET.SubElement(measure, "note")
+                    ET.SubElement(note_el, "rest")
+                    ET.SubElement(note_el, "duration").text = str(piece)
+                    ET.SubElement(note_el, "type").text = _duration_type(piece, divisions)
+                continue
+
+            notes: List[TabNote] = item["notes"]  # type: ignore[assignment]
+            base_tie_start = bool(item.get("tie_start"))
+            base_tie_stop = bool(item.get("tie_stop"))
+            for p_idx, piece in enumerate(pieces):
+                if len(pieces) > 1:
+                    if p_idx == 0:
+                        tie_start = True
+                        tie_stop = False
+                    elif p_idx == len(pieces) - 1:
+                        tie_start = False
+                        tie_stop = True
+                    else:
+                        tie_start = True
+                        tie_stop = True
+                else:
+                    tie_start = False
+                    tie_stop = False
+                if base_tie_start and p_idx == 0:
+                    tie_start = True
+                if base_tie_stop and p_idx == len(pieces) - 1:
+                    tie_stop = True
+                for n_idx, tab_note in enumerate(notes):
+                    note_el = ET.SubElement(measure, "note")
+                    if n_idx > 0:
+                        ET.SubElement(note_el, "chord")
+                    step, alter, octave = _midi_to_pitch(tab_note.pitch)
+                    pitch_el = ET.SubElement(note_el, "pitch")
+                    ET.SubElement(pitch_el, "step").text = step
+                    if alter:
+                        ET.SubElement(pitch_el, "alter").text = str(alter)
+                    ET.SubElement(pitch_el, "octave").text = str(octave)
+                    ET.SubElement(note_el, "duration").text = str(piece)
+                    ET.SubElement(note_el, "type").text = _duration_type(piece, divisions)
+                    ET.SubElement(note_el, "voice").text = "1"
+                    if item_idx in beam_status and n_idx == 0 and p_idx == 0:
+                        ET.SubElement(note_el, "beam", number="1").text = beam_status[item_idx]
+                    notations = ET.SubElement(note_el, "notations")
+                    if tie_start:
+                        ET.SubElement(notations, "tied", type="start")
+                        ET.SubElement(note_el, "tie", type="start")
+                    if tie_stop:
+                        ET.SubElement(notations, "tied", type="stop")
+                        ET.SubElement(note_el, "tie", type="stop")
+                    technical = ET.SubElement(notations, "technical")
+                    ET.SubElement(technical, "string").text = str(tab_note.string)
+                    ET.SubElement(technical, "fret").text = str(tab_note.fret)
+
+    _indent_xml(score)
+    tree = ET.ElementTree(score)
+    with open(output_path, "wb") as f:
+        f.write(b'<?xml version="1.0" encoding="UTF-8"?>\n')
+        f.write(
+            b'<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 3.1 Partwise//EN" '
+            b'"http://www.musicxml.org/dtds/partwise.dtd">\n'
+        )
+        tree.write(f, encoding="utf-8")
+
+
+def render_musicxml_to_pdf(musicxml_path: str, pdf_path: str, logger) -> None:
+    run_cmd(
+        [
+            SETTINGS.musescore_path,
+            "-o",
+            pdf_path,
+            musicxml_path,
+        ],
+        logger,
+    )
 

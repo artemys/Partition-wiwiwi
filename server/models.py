@@ -39,5 +39,6 @@ class Job(Base):
     tab_txt_path = Column(Text, nullable=True)
     tab_json_path = Column(Text, nullable=True)
     musicxml_path = Column(Text, nullable=True)
+    pdf_path = Column(Text, nullable=True)
     midi_path = Column(Text, nullable=True)
     logs_path = Column(Text, nullable=True)

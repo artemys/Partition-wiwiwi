@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 from .config import SETTINGS
@@ -16,3 +16,13 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    if SETTINGS.db_url.startswith("sqlite"):
+        with engine.connect() as conn:
+            cols = conn.execute(text("PRAGMA table_info(jobs)")).fetchall()
+            existing = {row[1] for row in cols}
+            if "start_seconds" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN start_seconds INTEGER"))
+            if "end_seconds" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN end_seconds INTEGER"))
+            if "pdf_path" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN pdf_path TEXT"))

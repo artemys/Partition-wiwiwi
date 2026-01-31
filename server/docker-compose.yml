@@ -12,6 +12,7 @@ services:
     environment:
       - TABSERVER_REDIS_URL=redis://redis:6379/0
       - TABSERVER_PUBLIC_URL=http://localhost:8000
+      - TABSERVER_MSCORE=mscore
     volumes:
       - ./data:/app/server/data
     ports:
@@ -26,6 +27,7 @@ services:
     command: ["python", "-m", "server.worker"]
     environment:
       - TABSERVER_REDIS_URL=redis://redis:6379/0
+      - TABSERVER_MSCORE=mscore
     volumes:
       - ./data:/app/server/data
     depends_on:

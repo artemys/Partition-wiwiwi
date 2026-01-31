@@ -12,8 +12,9 @@ from .config import SETTINGS
 from .db import SessionLocal, init_db
 from .models import Job
 from .schemas import CreateJobResponse, JobMetadata, JobResultResponse, JobStatusResponse, YoutubeRequest
+from .pipeline import render_musicxml_to_pdf
 from .tasks import process_job
-from .utils import ensure_dir
+from .utils import ensure_dir, get_job_logger
 
 app = FastAPI(title="TabScore Backend")
 
@@ -204,6 +205,7 @@ def get_job_result(job_id: str):
             tabTxtUrl=None,
             tabJsonUrl=None,
             musicXmlUrl=None,
+            pdfUrl=None,
             midiUrl=None,
             metadata=JobMetadata(),
             warnings=[],
@@ -213,7 +215,8 @@ def get_job_result(job_id: str):
     response = JobResultResponse(
         tabTxtUrl=f"{base_url}/files/{job_id}/tab.txt" if job.tab_txt_path else None,
         tabJsonUrl=f"{base_url}/files/{job_id}/tab.json" if job.tab_json_path else None,
-        musicXmlUrl=f"{base_url}/files/{job_id}/score.musicxml" if job.musicxml_path else None,
+        musicXmlUrl=f"{base_url}/files/{job_id}/result.musicxml" if job.musicxml_path else None,
+        pdfUrl=f"{base_url}/files/{job_id}/result.pdf" if job.pdf_path else None,
         midiUrl=f"{base_url}/files/{job_id}/output.mid" if job.midi_path else None,
         metadata=JobMetadata(
             durationSeconds=job.duration_seconds,
@@ -239,6 +242,8 @@ def download_file(job_id: str, file_name: str):
         "tab.txt": job.tab_txt_path,
         "tab.json": job.tab_json_path,
         "score.musicxml": job.musicxml_path,
+        "result.musicxml": job.musicxml_path,
+        "result.pdf": job.pdf_path,
         "output.mid": job.midi_path,
     }
     target = path_map.get(file_name)
@@ -254,7 +259,23 @@ def download_file(job_id: str, file_name: str):
         media_type = "application/xml"
     elif file_name.endswith(".mid"):
         media_type = "audio/midi"
+    elif file_name.endswith(".pdf"):
+        media_type = "application/pdf"
     return FileResponse(target, media_type=media_type, filename=file_name)
+
+
+@app.get("/test/render-pdf")
+def test_render_pdf():
+    sample_path = os.path.join(os.path.dirname(__file__), "samples", "sample_tab.musicxml")
+    if not os.path.exists(sample_path):
+        raise HTTPException(status_code=500, detail="MusicXML de test introuvable.")
+    output_dir = os.path.join(SETTINGS.data_dir, "test")
+    ensure_dir(output_dir)
+    logs_path = os.path.join(output_dir, "logs.txt")
+    logger = get_job_logger("test-render", logs_path)
+    pdf_path = os.path.join(output_dir, "sample.pdf")
+    render_musicxml_to_pdf(sample_path, pdf_path, logger)
+    return FileResponse(pdf_path, media_type="application/pdf", filename="sample.pdf")
 
 
 @app.delete("/jobs/{job_id}")

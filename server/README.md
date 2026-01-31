@@ -11,7 +11,7 @@ Génération réelle de tablatures à partir d’audio ou de liens YouTube.
 - Redis (local ou Docker)
 - yt-dlp (pour YouTube)
 - demucs + basic-pitch
-- music21 (optionnel pour MusicXML)
+- MuseScore CLI (mscore) pour le rendu PDF
 
 ### Installation
 
@@ -50,6 +50,12 @@ export TEST_AUDIO_FILE="/chemin/vers/audio.mp3"
 ./server/scripts/dev_test.sh
 ```
 
+## Rendu PDF (MusicXML -> PDF)
+
+```bash
+./server/scripts/render_pdf.sh /chemin/vers/result.musicxml /chemin/vers/result.pdf
+```
+
 ## Endpoints REST
 
 - `POST /jobs` (multipart `audio` ou JSON `{ youtubeUrl }`)
@@ -59,6 +65,7 @@ export TEST_AUDIO_FILE="/chemin/vers/audio.mp3"
 - `DELETE /jobs/{jobId}`
 - `GET /files/{jobId}/{fileName}`
 - `GET /health`
+- `GET /test/render-pdf` (rend un PDF depuis un MusicXML exemple)
 
 ## Pipeline (v1)
 
@@ -67,17 +74,22 @@ export TEST_AUDIO_FILE="/chemin/vers/audio.mp3"
 3. Isolation Demucs (sauf piste isolée).
 4. Basic Pitch → MIDI.
 5. Post-traitement notes + tablature.
-6. Export tab.txt / tab.json / MIDI / MusicXML (optionnel).
+6. Export tab.txt / tab.json / MIDI / MusicXML (result.musicxml) / PDF (result.pdf).
 
 ## Stockage
 
 Fichiers dans `server/data/{jobId}/` :
 
 - `input/` : fichiers bruts + wav
-- `output/` : `tab.txt`, `tab.json`, `output.mid`, `score.musicxml` (si dispo)
+- `output/` : `tab.txt`, `tab.json`, `output.mid`, `result.musicxml`, `result.pdf`
 - `logs.txt` : logs détaillés par job
 
 ## Erreurs
 
 Aucun résultat par défaut en cas d’échec.
 En cas de problème : `status=FAILED` + `errorMessage` clair + logs.
+
+## Résultat PDF
+
+`GET /jobs/{jobId}/result` retourne `pdfUrl` (obligatoire) et `musicXmlUrl` (optionnel).
+Le fichier PDF est disponible via `/files/{jobId}/result.pdf`.

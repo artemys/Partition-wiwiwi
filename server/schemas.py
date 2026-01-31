@@ -30,6 +30,7 @@ class JobResultResponse(BaseModel):
     tabTxtUrl: Optional[str] = None
     tabJsonUrl: Optional[str] = None
     musicXmlUrl: Optional[str] = None
+    pdfUrl: Optional[str] = None
     midiUrl: Optional[str] = None
     metadata: JobMetadata
     warnings: List[str] = Field(default_factory=list)
