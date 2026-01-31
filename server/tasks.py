@@ -1,7 +1,11 @@
+import csv
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +16,7 @@ from .pipeline import (
     DEFAULT_DIVISIONS,
     NoteEvent,
     NoteExtractionStats,
+    PitchTrackingDiagnostics,
     build_score_json,
     compute_confidence,
     convert_to_wav,
@@ -49,6 +54,58 @@ def _fail_job(db: Session, job_id: str, message: str, logger) -> None:
     _update_job(db, job_id, status="FAILED", error_message=message, stage="FAILED")
 
 
+POLYPHONY_SCORE_THRESHOLD = 0.45
+
+
+@dataclass
+class TranscriptionResult:
+    notes: List[NoteEvent]
+    metrics: Dict[str, float]
+    tempo_bpm: float
+    tempo_source: str
+    detected_tempo: Optional[float]
+    extraction_stats: Optional[NoteExtractionStats]
+    f0_preview_path: Optional[str]
+    diagnostics: Optional[PitchTrackingDiagnostics]
+    midi_path: Optional[str]
+
+
+class PolyphonyFallback(Exception):
+    def __init__(
+        self,
+        warning: str,
+        stats: NoteExtractionStats,
+        diagnostics: PitchTrackingDiagnostics,
+        preview_path: Optional[str],
+    ):
+        super().__init__(warning)
+        self.warning = warning
+        self.stats = stats
+        self.diagnostics = diagnostics
+        self.preview_path = preview_path
+
+
+def _write_f0_preview_csv(
+    path: str,
+    times: np.ndarray,
+    f0_values: np.ndarray,
+    confidence: np.ndarray,
+    midi_smoothed: np.ndarray,
+) -> None:
+    length = min(len(times), len(f0_values), len(confidence), len(midi_smoothed))
+    with open(path, "w", encoding="utf-8", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["time", "f0", "confidence", "midi_smoothed"])
+        for idx in range(length):
+            time_val = f"{times[idx]:.5f}"
+            f0_val = f"{float(f0_values[idx]):.2f}" if np.isfinite(f0_values[idx]) else ""
+            conf_val = f"{float(confidence[idx]):.4f}"
+            midi_val = (
+                f"{float(midi_smoothed[idx]):.2f}" if np.isfinite(midi_smoothed[idx]) else ""
+            )
+            writer.writerow([time_val, f0_val, conf_val, midi_val])
+
+
 def _stage(db: Session, job_id: str, stage: str, progress: int, logger, message: Optional[str] = None) -> None:
     if message:
         logger.info(message)
@@ -66,26 +123,78 @@ def _derive_title_artist(job: Job) -> Tuple[str, str]:
 
 
 def _process_monophonic_transcription(
-    job: Job, candidate_path: str, logger, warnings: List[str]
-) -> Tuple[List[NoteEvent], Dict[str, float], float, str, Optional[float], Optional[NoteExtractionStats]]:
-    tracker = run_pitch_tracker(candidate_path, logger)
-    notes, stats = f0_to_note_events(tracker)
+    job: Job, candidate_path: str, logger, warnings: List[str], output_dir: str
+) -> TranscriptionResult:
+    tracker_result = run_pitch_tracker(candidate_path, logger)
+    notes, stats, diagnostics = f0_to_note_events(tracker_result)
+    f0_preview_path = os.path.join(output_dir, "f0_preview.csv")
+    _write_f0_preview_csv(
+        f0_preview_path,
+        diagnostics.times,
+        tracker_result.f0,
+        tracker_result.confidence,
+        diagnostics.midi_smoothed,
+    )
     logger.info(
         "Monophonic extraction: %d notes, instability %.2f, voiced ratio %.2f",
         stats.notes_count,
         stats.instability_ratio,
         stats.voiced_ratio,
     )
-    if stats.instability_ratio > 0.4 and stats.notes_count > 0:
-        raise RuntimeError("Signal trop polyphonique, essayez le mode polyphonique.")
-    tempo_bpm, tempo_source = estimate_tempo(tracker.audio, tracker.sr, logger)
+    if stats.polyphony_score >= POLYPHONY_SCORE_THRESHOLD:
+        warning = "Signal trop polyphonique pour mode accordeur, bascule polyphonique."
+        raise PolyphonyFallback(warning, stats, diagnostics, f0_preview_path)
+    tempo_bpm, tempo_source = estimate_tempo(tracker_result.audio, tracker_result.sr, logger)
     tempo_detected = tempo_bpm if tempo_source != "default" else None
     if tempo_source == "default":
         warnings.append("Tempo inconnu, valeur par défaut utilisée.")
     processed, metrics = post_process_notes(notes, job.quality, tempo_bpm)
     if not processed:
         raise RuntimeError("Aucune note exploitable après post-traitement.")
-    return processed, metrics, tempo_bpm, tempo_source, tempo_detected, stats
+    return TranscriptionResult(
+        notes=processed,
+        metrics=metrics,
+        tempo_bpm=tempo_bpm,
+        tempo_source=tempo_source,
+        detected_tempo=tempo_detected,
+        extraction_stats=stats,
+        f0_preview_path=f0_preview_path,
+        diagnostics=diagnostics,
+        midi_path=None,
+    )
+
+
+def _process_basic_pitch_transcription(
+    job: Job, candidate_path: str, logger, warnings: List[str], output_dir: str
+) -> TranscriptionResult:
+    midi_dir = os.path.join(output_dir, "midi")
+    ensure_dir(midi_dir)
+    midi_generated = run_basic_pitch(candidate_path, midi_dir, logger)
+    midi_path = os.path.join(output_dir, "output.mid")
+    shutil.copyfile(midi_generated, midi_path)
+    notes, detected_tempo = load_midi_notes(midi_path)
+    if detected_tempo:
+        logger.info("BPM détecté depuis MIDI: %.2f", detected_tempo)
+    else:
+        logger.warning("Aucun BPM détecté depuis MIDI.")
+    tempo_used = detected_tempo if detected_tempo and detected_tempo > 0 else SETTINGS.default_tempo_bpm
+    tempo_source = "midi" if detected_tempo and detected_tempo > 0 else "default"
+    if tempo_source == "default":
+        warnings.append("Tempo inconnu, valeur par défaut utilisée.")
+    processed, metrics = post_process_notes(notes, job.quality, tempo_used)
+    if not processed:
+        raise RuntimeError("Aucune note exploitable après post-traitement.")
+    return TranscriptionResult(
+        notes=processed,
+        metrics=metrics,
+        tempo_bpm=tempo_used,
+        tempo_source=tempo_source,
+        detected_tempo=detected_tempo,
+        extraction_stats=None,
+        f0_preview_path=None,
+        diagnostics=None,
+        midi_path=midi_path,
+    )
 
 
 def process_job(job_id: str) -> None:
@@ -158,41 +267,61 @@ def process_job(job_id: str) -> None:
         else:
             warnings.append("Piste guitare isolée: Demucs ignoré.")
 
+        pitch_mode = "monophonic"
+        fallback_stats = None
+        fallback_preview = None
         if job.transcription_mode == "monophonic_tuner":
             _stage(db, job_id, "TRANSCRIPTION_MONOPHONIC", 55, logger, "Transcription monophonique type accordeur.")
-            (
-                processed,
-                metrics,
-                tempo_used,
-                tempo_source,
-                detected_tempo,
-                extraction_stats,
-            ) = _process_monophonic_transcription(job, candidate_path, logger, warnings)
-            note_events_count = len(processed)
-            midi_path = None
+            try:
+                result = _process_monophonic_transcription(
+                    job, candidate_path, logger, warnings, output_dir
+                )
+                pitch_mode = "monophonic"
+            except PolyphonyFallback as exc:
+                warnings.append(exc.warning)
+                fallback_stats = exc.stats
+                fallback_preview = exc.preview_path
+                _stage(
+                    db,
+                    job_id,
+                    "TRANSCRIPTION_BASIC_PITCH",
+                    55,
+                    logger,
+                    "Transcription audio -> MIDI.",
+                )
+                result = _process_basic_pitch_transcription(
+                    job, candidate_path, logger, warnings, output_dir
+                )
+                pitch_mode = "polyphonic_basic_pitch"
         else:
-            _stage(db, job_id, "TRANSCRIPTION_BASIC_PITCH", 55, logger, "Transcription audio -> MIDI.")
-            midi_dir = os.path.join(output_dir, "midi")
-            ensure_dir(midi_dir)
-            midi_generated = run_basic_pitch(candidate_path, midi_dir, logger)
-            midi_path = os.path.join(output_dir, "output.mid")
-            shutil.copyfile(midi_generated, midi_path)
-            _stage(db, job_id, "POST_PROCESSING", 70, logger, "Nettoyage et quantification des notes.")
-            notes, detected_tempo = load_midi_notes(midi_path)
-            if detected_tempo:
-                logger.info("BPM détecté depuis MIDI: %.2f", detected_tempo)
-            else:
-                logger.warning("Aucun BPM détecté depuis MIDI.")
-            tempo_used = detected_tempo if detected_tempo and detected_tempo > 0 else SETTINGS.default_tempo_bpm
-            tempo_source = "midi" if detected_tempo and detected_tempo > 0 else "default"
-            if tempo_source == "default":
-                warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-            logger.info("Tempo utilisé pour quantization: %.2f BPM", tempo_used)
-            processed, metrics = post_process_notes(notes, job.quality, tempo_used)
-            if not processed:
-                raise RuntimeError("Aucune note exploitable après post-traitement.")
-            note_events_count = len(processed)
-            extraction_stats = None
+            _stage(
+                db,
+                job_id,
+                "TRANSCRIPTION_BASIC_PITCH",
+                55,
+                logger,
+                "Transcription audio -> MIDI.",
+            )
+            result = _process_basic_pitch_transcription(
+                job, candidate_path, logger, warnings, output_dir
+            )
+            pitch_mode = "polyphonic_basic_pitch"
+        note_events_count = len(result.notes)
+        processed = result.notes
+        metrics = result.metrics
+        tempo_used = result.tempo_bpm
+        tempo_source = result.tempo_source
+        detected_tempo = result.detected_tempo
+        extraction_stats = result.extraction_stats or fallback_stats
+        midi_path = result.midi_path
+        _stage(
+            db,
+            job_id,
+            "POST_PROCESSING",
+            70,
+            logger,
+            "Nettoyage et quantification des notes.",
+        )
 
         divisions = DEFAULT_DIVISIONS
         measure_ticks = divisions * 4
@@ -284,6 +413,22 @@ def process_job(job_id: str) -> None:
         if confidence < 0.35:
             warnings.append("Confidence faible: piste guitare isolée recommandée.")
 
+        chunk_stats = extraction_stats
+        pitch_chunks = []
+        if chunk_stats:
+            pitch_chunks.append(
+                {
+                    "start": 0.0,
+                    "end": duration,
+                    "mode": pitch_mode,
+                    "voiced_ratio": chunk_stats.voiced_ratio,
+                    "note_change_rate": chunk_stats.note_change_rate,
+                    "jump_rate": chunk_stats.jump_rate,
+                    "polyphony_score": chunk_stats.polyphony_score,
+                    "low_energy_ratio": chunk_stats.low_energy_ratio,
+                }
+            )
+        preview_path = result.f0_preview_path or fallback_preview
         debug_info = {
             "midiBpmDetected": detected_tempo,
             "tempoUsedForQuantization": tempo_used,
@@ -311,6 +456,11 @@ def process_job(job_id: str) -> None:
                 "pitchMedian": extraction_stats.pitch_median if extraction_stats else None,
                 "pitchMin": extraction_stats.pitch_min if extraction_stats else None,
                 "pitchMax": extraction_stats.pitch_max if extraction_stats else None,
+                "pitchMode": pitch_mode,
+                "pitchChunks": pitch_chunks,
+                "f0PreviewPath": preview_path,
+                "polyphonyScore": chunk_stats.polyphony_score if chunk_stats else None,
+                "lowEnergyRatio": chunk_stats.low_energy_ratio if chunk_stats else None,
                 "warnings": list(warnings),
             }
         )

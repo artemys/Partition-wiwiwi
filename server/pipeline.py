@@ -38,6 +38,7 @@ class PitchTrackerResult:
     voiced: np.ndarray
     confidence: np.ndarray
     rms: np.ndarray
+    low_band_rms: np.ndarray
 
 
 @dataclass
@@ -48,6 +49,21 @@ class NoteExtractionStats:
     pitch_min: Optional[float]
     pitch_max: Optional[float]
     notes_count: int
+    note_change_rate: float
+    jump_rate: float
+    polyphony_score: float
+    low_energy_ratio: float
+
+
+@dataclass
+class PitchTrackingDiagnostics:
+    midi_smoothed: np.ndarray
+    times: np.ndarray
+    note_changes: int
+    jump_events: int
+    note_change_rate: float
+    jump_rate: float
+    low_energy_ratio: float
 
 
 DEFAULT_DIVISIONS = 4
@@ -129,9 +145,10 @@ def run_pitch_tracker(input_wav: str, logger=None) -> PitchTrackerResult:
         raise RuntimeError(f"Pitch tracking échoué: {exc}") from exc
     if f0 is None:
         raise RuntimeError("Pitch tracking n'a retourné aucune fréquence.")
+
     smoothed = np.copy(f0)
-    window = 5
-    half = window // 2
+    median_window = 7
+    half = median_window // 2
     for idx in range(len(smoothed)):
         if not voiced[idx] or not np.isfinite(f0[idx]):
             continue
@@ -141,10 +158,35 @@ def run_pitch_tracker(input_wav: str, logger=None) -> PitchTrackerResult:
         block = block[np.isfinite(block)]
         if block.size:
             smoothed[idx] = np.median(block)
-    smoothed = np.clip(smoothed, 82.0, 1319.0, out=smoothed)
+    np.clip(smoothed, 82.0, 1319.0, out=smoothed)
+
+    ema_alpha = 0.25
+    ema_smoothed = np.full_like(smoothed, np.nan)
+    last_value = None
+    for idx in range(len(smoothed)):
+        if not voiced[idx] or not np.isfinite(smoothed[idx]):
+            last_value = None
+            continue
+        if last_value is None:
+            last_value = smoothed[idx]
+        else:
+            last_value = ema_alpha * smoothed[idx] + (1 - ema_alpha) * last_value
+        ema_smoothed[idx] = last_value
+    np.clip(ema_smoothed, 82.0, 1319.0, out=ema_smoothed)
+    smoothed = ema_smoothed
+
     rms = librosa.feature.rms(y=filtered, frame_length=frame_length, hop_length=hop_length)[
         0
     ]
+    try:
+        low_b, low_a = _butter_bandpass(80.0, min(200.0, 0.499 * sr), sr)
+        low_filtered = lfilter(low_b, low_a, filtered)
+        low_band_rms = librosa.feature.rms(
+            y=low_filtered, frame_length=frame_length, hop_length=hop_length
+        )[0]
+    except ValueError:
+        low_band_rms = np.zeros_like(rms)
+
     if logger:
         voiced_ratio = float(np.count_nonzero(voiced)) / max(1, len(voiced))
         logger.info("Pitch tracking frames: %s, voiced ratio: %.2f", len(voiced), voiced_ratio)
@@ -154,9 +196,108 @@ def run_pitch_tracker(input_wav: str, logger=None) -> PitchTrackerResult:
         hop_length=hop_length,
         f0=smoothed,
         voiced=voiced.astype(bool),
-        confidence=np.nan_to_num(np.asarray(voiced_confidence) if voiced_confidence is not None else np.zeros_like(voiced), nan=0.0),
+        confidence=np.nan_to_num(
+            np.asarray(voiced_confidence) if voiced_confidence is not None else np.zeros_like(voiced), nan=0.0
+        ),
         rms=rms,
+        low_band_rms=low_band_rms,
     )
+
+
+def _track_midi_sequence(
+    midi_series: np.ndarray,
+    valid: np.ndarray,
+    frame_duration: float,
+    confidences: np.ndarray,
+    low_energy_ratio: np.ndarray,
+    change_threshold: float,
+    stable_frames: int,
+    jump_semitones: float = 7.0,
+    jump_cooldown_seconds: float = 0.1,
+    high_note_threshold: float = 88.0,
+    high_note_confidence: float = 0.85,
+    low_energy_strength: float = 0.25,
+) -> Tuple[np.ndarray, PitchTrackingDiagnostics]:
+    n_frames = len(midi_series)
+    tracked = np.full_like(midi_series, np.nan)
+    current_midi: Optional[float] = None
+    pending_midi: Optional[float] = None
+    pending_frames = 0
+    note_changes = 0
+    jump_events = 0
+    jump_cooldown_frames = max(1, int(np.ceil(jump_cooldown_seconds / frame_duration)))
+    jump_cooldown = 0
+    harmonic_intervals = (12.0, 19.0)
+    voiced_frames = int(np.count_nonzero(valid))
+    for idx in range(n_frames):
+        if not valid[idx] or not np.isfinite(midi_series[idx]):
+            tracked[idx] = np.nan
+            pending_midi = None
+            pending_frames = 0
+            continue
+        candidate = midi_series[idx]
+        if current_midi is None:
+            current_midi = candidate
+            tracked[idx] = candidate
+            continue
+        if jump_cooldown > 0:
+            jump_cooldown -= 1
+        is_high = candidate > high_note_threshold
+        if is_high and confidences[idx] < high_note_confidence:
+            candidate = current_midi
+        is_harmonic = any(
+            abs(candidate - (current_midi + interval)) <= 1.0 for interval in harmonic_intervals
+        )
+        has_strong_low = idx < len(low_energy_ratio) and low_energy_ratio[idx] >= low_energy_strength
+        if is_harmonic and has_strong_low:
+            tracked[idx] = current_midi
+            pending_midi = None
+            pending_frames = 0
+            continue
+        if pending_midi is None or abs(candidate - pending_midi) > 0.5:
+            pending_midi = candidate
+            pending_frames = 1
+        else:
+            pending_frames += 1
+        if pending_frames < max(stable_frames, 6):
+            tracked[idx] = current_midi
+            continue
+        proposed = pending_midi
+        if abs(proposed - current_midi) > jump_semitones:
+            jump_events += 1
+            jump_cooldown = jump_cooldown_frames
+            pending_midi = None
+            pending_frames = 0
+            tracked[idx] = current_midi
+            continue
+        if proposed > high_note_threshold and confidences[idx] < high_note_confidence:
+            tracked[idx] = current_midi
+            pending_midi = None
+            pending_frames = 0
+            continue
+        if abs(proposed - current_midi) > change_threshold:
+            note_changes += 1
+        current_midi = proposed
+        pending_midi = None
+        pending_frames = 0
+        tracked[idx] = current_midi
+
+    total_seconds = max(1e-6, float(voiced_frames) * frame_duration)
+    note_change_rate = float(note_changes) / total_seconds
+    jump_rate = float(jump_events) / max(1, note_changes) if note_changes else 0.0
+    ratio_slice = low_energy_ratio[:n_frames] if low_energy_ratio.size >= n_frames else low_energy_ratio
+    ratio_valid = ratio_slice[valid[: ratio_slice.size]]
+    low_energy_val = float(np.nanmean(ratio_valid)) if ratio_valid.size else 0.0
+    diagnostics = PitchTrackingDiagnostics(
+        midi_smoothed=tracked,
+        times=np.arange(n_frames, dtype=float) * frame_duration,
+        note_changes=note_changes,
+        jump_events=jump_events,
+        note_change_rate=note_change_rate,
+        jump_rate=jump_rate,
+        low_energy_ratio=low_energy_val,
+    )
+    return tracked, diagnostics
 
 
 def f0_to_note_events(
@@ -164,13 +305,31 @@ def f0_to_note_events(
     min_duration_sec: float = 0.08,
     pitch_change_threshold: float = 0.5,
     stable_frames: int = 3,
-) -> Tuple[List[NoteEvent], NoteExtractionStats]:
+) -> Tuple[List[NoteEvent], NoteExtractionStats, PitchTrackingDiagnostics]:
     frame_duration = tracker.hop_length / tracker.sr if tracker.sr else 0.0
     frame_duration = max(frame_duration, 1e-4)
     min_frames = max(1, int(np.ceil(min_duration_sec / frame_duration)))
     valid = tracker.voiced & np.isfinite(tracker.f0)
     midi_series = np.full_like(tracker.f0, np.nan)
     midi_series[valid] = _hz_to_midi(tracker.f0[valid])
+
+    low_ratio = np.zeros_like(tracker.f0)
+    ratio_len = min(len(tracker.low_band_rms), len(tracker.rms), len(tracker.f0))
+    if ratio_len > 0:
+        energy = np.maximum(np.square(tracker.rms[:ratio_len]), 1e-8)
+        low_energy = np.square(tracker.low_band_rms[:ratio_len])
+        low_ratio[:ratio_len] = np.clip(low_energy / energy, 0.0, 1.0)
+
+    tracked_midi, diagnostics = _track_midi_sequence(
+        midi_series=midi_series,
+        valid=valid,
+        frame_duration=frame_duration,
+        confidences=tracker.confidence,
+        low_energy_ratio=low_ratio,
+        change_threshold=pitch_change_threshold,
+        stable_frames=stable_frames,
+    )
+
     notes: List[NoteEvent] = []
     buffer: List[float] = []
     rms_buffer: List[float] = []
@@ -178,7 +337,7 @@ def f0_to_note_events(
     instability = 0
     max_rms = float(np.max(tracker.rms)) if tracker.rms.size else 0.0
 
-    def flush_segment():
+    def flush_segment() -> None:
         nonlocal buffer, rms_buffer, start_frame
         if not buffer:
             return
@@ -204,17 +363,14 @@ def f0_to_note_events(
         rms_buffer = []
 
     for idx in range(len(tracker.f0)):
-        if idx >= len(tracker.rms):
-            rms_value = 0.0
-        else:
-            rms_value = float(tracker.rms[idx])
-        if not valid[idx]:
+        rms_value = float(tracker.rms[idx]) if idx < len(tracker.rms) else 0.0
+        pitch = tracked_midi[idx]
+        if not valid[idx] or not np.isfinite(pitch):
             if buffer:
                 flush_segment()
             buffer = []
             rms_buffer = []
             continue
-        pitch = float(midi_series[idx])
         if not buffer:
             start_frame = idx
             buffer = [pitch]
@@ -237,21 +393,38 @@ def f0_to_note_events(
     if buffer:
         flush_segment()
 
-    valid_midi = midi_series[np.isfinite(midi_series)]
+    valid_midi = tracked_midi[np.isfinite(tracked_midi)]
     pitch_median = float(np.median(valid_midi)) if valid_midi.size else None
     pitch_min = float(np.min(valid_midi)) if valid_midi.size else None
     pitch_max = float(np.max(valid_midi)) if valid_midi.size else None
     voiced_frames = float(np.count_nonzero(valid))
     total_frames = float(max(1, len(tracker.f0)))
+    voiced_ratio = voiced_frames / total_frames
+    instability_ratio = instability / max(1, int(voiced_frames))
+    non_voiced_ratio = 1.0 - voiced_ratio
+    note_change_norm = min(1.0, diagnostics.note_change_rate / 4.0)
+    polyphony_score = float(
+        np.clip(
+            np.mean(
+                [non_voiced_ratio, instability_ratio, note_change_norm, diagnostics.jump_rate]
+            ),
+            0.0,
+            1.0,
+        )
+    )
     stats = NoteExtractionStats(
-        voiced_ratio=voiced_frames / total_frames,
-        instability_ratio=instability / max(1, int(voiced_frames)),
+        voiced_ratio=voiced_ratio,
+        instability_ratio=instability_ratio,
         pitch_median=pitch_median,
         pitch_min=pitch_min,
         pitch_max=pitch_max,
         notes_count=len(notes),
+        note_change_rate=diagnostics.note_change_rate,
+        jump_rate=diagnostics.jump_rate,
+        polyphony_score=polyphony_score,
+        low_energy_ratio=diagnostics.low_energy_ratio,
     )
-    return notes, stats
+    return notes, stats, diagnostics
 
 
 def estimate_tempo(audio: np.ndarray, sr: int, logger=None) -> Tuple[float, str]:
