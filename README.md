@@ -9,25 +9,7 @@ Application web pour transcrire un audio ou un lien YouTube en tablature et/ou p
 
 ## Démarrage rapide (local)
 
-### Backend
-
-Voir `server/README.md` pour les prérequis (ffmpeg, Redis, MuseScore, etc.).
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r server/requirements.txt
-export TABSERVER_PUBLIC_URL=http://localhost:8000
-uvicorn server.main:app --reload --port 8000
-```
-
-Dans un second terminal :
-
-```bash
-python -m server.worker
-```
-
-### Frontend
+### Frontend (dev)
 
 ```bash
 cd web

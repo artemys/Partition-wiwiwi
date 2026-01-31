@@ -23,7 +23,6 @@ build/
 **/*.keystore
 
 # Python
-.venv/
 **/__pycache__/
 **/*.pyc
 **/*.pyo

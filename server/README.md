@@ -2,9 +2,7 @@
 
 Génération réelle de tablatures à partir d’audio ou de liens YouTube.
 
-## Démarrage local
-
-### Prérequis système
+## Prérequis système
 
 - Python 3.10+
 - ffmpeg + ffprobe
@@ -12,28 +10,6 @@ Génération réelle de tablatures à partir d’audio ou de liens YouTube.
 - yt-dlp (pour YouTube)
 - demucs + basic-pitch
 - MuseScore CLI (mscore) pour le rendu PDF
-
-### Installation
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r server/requirements.txt
-```
-
-### Lancer l’API + worker
-
-```bash
-export TABSERVER_REDIS_URL=redis://localhost:6379/0
-export TABSERVER_PUBLIC_URL=http://localhost:8000
-uvicorn server.main:app --reload --port 8000
-```
-
-Dans un second terminal :
-
-```bash
-python -m server.worker
-```
 
 ## Docker
 
