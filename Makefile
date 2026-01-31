@@ -1,10 +1,10 @@
-.PHONY: help venv install redis-start redis-stop redis-restart api worker ngrok restart-all kill-all dev web
+.PHONY: help venv install redis-start redis-stop redis-restart api worker ngrok restart-all kill-all dev web web-install web-build web-start compose-down
 
 SHELL := /bin/bash
 VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
-TABSERVER_PUBLIC_URL ?= https://ungenial-easterly-beth.ngrok-free.dev
+TABSERVER_PUBLIC_URL ?= http://localhost:8000
 
 help:
 	@echo "Targets:"
@@ -19,7 +19,11 @@ help:
 	@echo "  kill-all       Kill api/worker/ffmpeg/ngrok"
 	@echo "  restart-all    Restart redis + api + worker"
 	@echo "  web            Run Next.js frontend"
+	@echo "  web-install    Install web dependencies"
+	@echo "  web-build      Build web app"
+	@echo "  web-start      Start web app (prod)"
 	@echo "  dev            Run docker compose stack"
+	@echo "  compose-down   Stop docker compose stack"
 
 venv:
 	python3 -m venv $(VENV)
@@ -48,6 +52,15 @@ worker:
 web:
 	cd web && pnpm dev
 
+web-install:
+	cd web && pnpm install
+
+web-build:
+	cd web && pnpm build
+
+web-start:
+	cd web && pnpm start
+
 ngrok:
 	ngrok http 8000
 
@@ -67,3 +80,6 @@ restart-all: kill-all redis-restart
 
 dev:
 	docker compose up --build
+
+compose-down:
+	docker compose down
