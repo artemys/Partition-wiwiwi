@@ -35,7 +35,7 @@ def _build_tracker(
 def test_f0_to_note_events_with_constant_pitch_emits_single_note():
     frames = 12
     tracker = _build_tracker(np.full(frames, 440.0, dtype=np.float32))
-    notes, stats, _ = f0_to_note_events(tracker)
+    notes, stats, _ = f0_to_note_events(tracker, onset_frames=[0])
 
     assert len(notes) == 1
     first = notes[0]
@@ -48,7 +48,7 @@ def test_f0_to_note_events_detects_two_notes_on_pitch_change():
     frames = 16
     values = np.array([440.0] * frames + [494.0] * frames, dtype=np.float32)
     tracker = _build_tracker(values)
-    notes, stats, _ = f0_to_note_events(tracker)
+    notes, stats, _ = f0_to_note_events(tracker, onset_frames=[0, frames])
 
     assert len(notes) == 2
     assert notes[1].start > notes[0].start
@@ -63,7 +63,7 @@ def test_harmonic_dominance_prefers_lower_fundamental():
     values = np.concatenate((fundamental, harmonic))
     low_energy = np.ones(len(values), dtype=np.float32) * 0.5
     tracker = _build_tracker(values, low_band_rms=low_energy)
-    notes, stats, _ = f0_to_note_events(tracker)
+    notes, stats, _ = f0_to_note_events(tracker, onset_frames=[0, frames])
     assert len(notes) == 1
     assert stats.notes_count == 1
     assert stats.polyphony_score < 0.5
@@ -73,9 +73,9 @@ def test_polyphonic_signal_increases_polyphony_score():
     frames = 24
     pattern = np.array([440.0, 554.0, 659.0, 880.0] * (frames // 4), dtype=np.float32)
     tracker = _build_tracker(pattern)
-    _, stats, _ = f0_to_note_events(tracker)
+    _, stats, _ = f0_to_note_events(tracker, onset_frames=[0])
     assert stats.polyphony_score > 0.5
-    assert stats.note_change_rate > 0.0
+    assert stats.instability_ratio > 0.5
 
 
 def test_post_process_notes_quantizes_to_tempo_grid():
@@ -91,3 +91,18 @@ def test_post_process_notes_quantizes_to_tempo_grid():
         normalized_duration = note.duration / grid
         assert abs(normalized_start - round(normalized_start)) < 1e-6
         assert abs(normalized_duration - round(normalized_duration)) < 1e-6
+
+
+def test_post_process_notes_merges_close_segments_and_drops_too_short():
+    events = [
+        # Deux segments quasi contigus, même pitch -> fusion
+        NoteEvent(start=0.00, duration=0.10, pitch=64, velocity=70),
+        NoteEvent(start=0.11, duration=0.10, pitch=64, velocity=70),
+        # Trop court -> supprimé (en accurate, seuil ~80ms avant quantization)
+        NoteEvent(start=0.30, duration=0.03, pitch=65, velocity=70),
+    ]
+    processed, _ = post_process_notes(events, "accurate", 120)
+    assert processed
+    assert all(n.duration >= 0.08 for n in processed)
+    # On attend une seule note principale après fusion
+    assert sum(1 for n in processed if n.pitch == 64) == 1

@@ -94,9 +94,37 @@ def _butter_bandpass(lowcut: float, highcut: float, sr: int, order: int = 4) -> 
     return butter(order, [low, high], btype="band")
 
 
+def _butter_lowpass(cutoff: float, sr: int, order: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    nyquist = 0.5 * sr
+    value = min(max(cutoff / nyquist, 1e-6), 0.999)
+    return butter(order, value, btype="low")
+
+
 def _apply_guitar_bandpass(y: np.ndarray, sr: int) -> np.ndarray:
+    """Filtre 'guitare focus'.
+
+    Objectif: réduire le bas inutile et couper les très hautes fréquences tout en gardant
+    les fondamentales (E2–E6) exploitables pour le pitch tracking.
+    """
+    if y.size == 0:
+        return y
     try:
-        b, a = _butter_bandpass(80.0, min(6000.0, 0.499 * sr), sr)
+        # Bandpass large pour conserver les fondamentales et une partie des harmoniques.
+        band_b, band_a = _butter_bandpass(80.0, min(0.499 * sr, 8000.0), sr)
+        filtered = lfilter(band_b, band_a, y)
+        # Lowpass de "propreté" (souvent redondant si la coupure bandpass est < cutoff).
+        lp_b, lp_a = _butter_lowpass(min(0.499 * sr, 8000.0), sr)
+        return lfilter(lp_b, lp_a, filtered)
+    except ValueError:
+        return y
+
+
+def _apply_onset_band(y: np.ndarray, sr: int) -> np.ndarray:
+    """Bande centrée guitare (attaque/rythme) pour onset/beat tracking."""
+    if y.size == 0:
+        return y
+    try:
+        b, a = _butter_bandpass(80.0, min(0.499 * sr, 1200.0), sr)
         return lfilter(b, a, y)
     except ValueError:
         return y
@@ -108,6 +136,22 @@ def _apply_noise_gate(y: np.ndarray, threshold: float = 0.02) -> np.ndarray:
     level = max(threshold, float(np.percentile(np.abs(y), 15)))
     mask = np.abs(y) >= level
     return y * mask
+
+
+def _normalize_rms(y: np.ndarray, target_rms: float = 0.12, max_gain: float = 12.0) -> np.ndarray:
+    """Normalisation RMS légère (utile pour onset + pyin)."""
+    if y.size == 0:
+        return y
+    rms = float(np.sqrt(np.mean(np.square(y), dtype=np.float64)))
+    if not np.isfinite(rms) or rms <= 1e-8:
+        return y
+    gain = float(target_rms / rms)
+    gain = float(clamp(gain, 1.0 / max_gain, max_gain))
+    out = y * gain
+    peak = float(np.max(np.abs(out))) if out.size else 0.0
+    if peak > 1.0:
+        out = out / peak
+    return out
 
 
 def _velocity_from_rms(values: List[float], max_rms: float) -> int:
@@ -132,6 +176,7 @@ def run_pitch_tracker(input_wav: str, logger=None) -> PitchTrackerResult:
     y, sr = librosa.load(input_wav, sr=SETTINGS.sample_rate, mono=True)
     filtered = _apply_guitar_bandpass(y, sr)
     filtered = _apply_noise_gate(filtered)
+    filtered = _normalize_rms(filtered)
     try:
         f0, voiced, voiced_confidence = librosa.pyin(
             filtered,
@@ -213,7 +258,7 @@ def _track_midi_sequence(
     change_threshold: float,
     stable_frames: int,
     jump_semitones: float = 7.0,
-    jump_cooldown_seconds: float = 0.1,
+    jump_cooldown_seconds: float = 0.12,
     high_note_threshold: float = 88.0,
     high_note_confidence: float = 0.85,
     low_energy_strength: float = 0.25,
@@ -249,6 +294,8 @@ def _track_midi_sequence(
             abs(candidate - (current_midi + interval)) <= 1.0 for interval in harmonic_intervals
         )
         has_strong_low = idx < len(low_energy_ratio) and low_energy_ratio[idx] >= low_energy_strength
+        # Anti-harmoniques: si on "monte" vers une harmonique (souvent +12) et que le bas est présent,
+        # on préfère conserver la fondamentale.
         if is_harmonic and has_strong_low:
             tracked[idx] = current_midi
             pending_midi = None
@@ -305,6 +352,7 @@ def f0_to_note_events(
     min_duration_sec: float = 0.08,
     pitch_change_threshold: float = 0.5,
     stable_frames: int = 3,
+    onset_frames: Optional[Iterable[int]] = None,
 ) -> Tuple[List[NoteEvent], NoteExtractionStats, PitchTrackingDiagnostics]:
     frame_duration = tracker.hop_length / tracker.sr if tracker.sr else 0.0
     frame_duration = max(frame_duration, 1e-4)
@@ -331,67 +379,71 @@ def f0_to_note_events(
     )
 
     notes: List[NoteEvent] = []
-    buffer: List[float] = []
-    rms_buffer: List[float] = []
-    start_frame = 0
     instability = 0
     max_rms = float(np.max(tracker.rms)) if tracker.rms.size else 0.0
 
-    def flush_segment() -> None:
-        nonlocal buffer, rms_buffer, start_frame
-        if not buffer:
-            return
-        duration = len(buffer) * frame_duration
-        pitch_median = float(np.median(buffer))
-        pitch_value = int(round(pitch_median))
-        if duration < min_duration_sec:
-            if notes and abs(notes[-1].pitch - pitch_value) <= pitch_change_threshold:
-                notes[-1].duration += duration
-            buffer = []
-            rms_buffer = []
-            return
-        velocity = _velocity_from_rms(rms_buffer, max_rms)
+    # Segmentation onset-based.
+    # Pour les tests unitaires / déterminisme, on peut injecter explicitement les onsets.
+    boundaries: List[int] = []
+    if onset_frames is not None:
+        try:
+            boundaries = sorted({int(x) for x in onset_frames if x is not None})
+        except TypeError:
+            boundaries = []
+    if not boundaries or boundaries[0] != 0:
+        boundaries = [0] + boundaries
+    end_frame = len(tracker.f0)
+    boundaries = [b for b in boundaries if 0 <= b < end_frame]
+    if not boundaries or boundaries[-1] != end_frame:
+        boundaries.append(end_frame)
+
+    from collections import Counter as _Counter
+
+    for start_idx, end_idx in zip(boundaries[:-1], boundaries[1:]):
+        if end_idx <= start_idx:
+            continue
+        segment_valid = valid[start_idx:end_idx]
+        if not np.any(segment_valid):
+            continue
+        segment_pitches = tracked_midi[start_idx:end_idx][segment_valid]
+        segment_pitches = segment_pitches[np.isfinite(segment_pitches)]
+        if segment_pitches.size == 0:
+            continue
+        rounded = [int(round(float(val))) for val in segment_pitches]
+        counter = _Counter(rounded)
+        pitch_value, _ = counter.most_common(1)[0]
+        # Instabilité: on mesure sur la série "brute" (avant hysteresis) pour détecter
+        # les signaux polyphoniques/instables même si la stabilisation bloque les changements.
+        raw_slice = midi_series[start_idx:end_idx][segment_valid]
+        raw_slice = raw_slice[np.isfinite(raw_slice)]
+        if raw_slice.size:
+            instability += int(np.count_nonzero(np.abs(raw_slice - float(pitch_value)) > 1.0))
+        duration = (end_idx - start_idx) * frame_duration
+        rms_slice = tracker.rms[start_idx:end_idx] if tracker.rms.size else np.array([], dtype=np.float32)
+        velocity = _velocity_from_rms([float(x) for x in rms_slice.tolist()], max_rms)
         notes.append(
             NoteEvent(
-                start=start_frame * frame_duration,
+                start=start_idx * frame_duration,
                 duration=duration,
-                pitch=clamp(pitch_value, 0, 127),
+                pitch=int(clamp(pitch_value, 0, 127)),
                 velocity=velocity,
             )
         )
-        buffer = []
-        rms_buffer = []
 
-    for idx in range(len(tracker.f0)):
-        rms_value = float(tracker.rms[idx]) if idx < len(tracker.rms) else 0.0
-        pitch = tracked_midi[idx]
-        if not valid[idx] or not np.isfinite(pitch):
-            if buffer:
-                flush_segment()
-            buffer = []
-            rms_buffer = []
+    # Fusion de segments adjacents (onsets “trop fins”) si même pitch / gap négligeable.
+    merged: List[NoteEvent] = []
+    for note in sorted(notes, key=lambda n: n.start):
+        if not merged:
+            merged.append(note)
             continue
-        if not buffer:
-            start_frame = idx
-            buffer = [pitch]
-            rms_buffer = [rms_value]
-            continue
-        median_pitch = float(np.median(buffer))
-        if abs(pitch - median_pitch) > pitch_change_threshold:
-            instability += 1
-            if len(buffer) >= max(min_frames, stable_frames):
-                flush_segment()
-                start_frame = idx
-                buffer = [pitch]
-                rms_buffer = [rms_value]
-            else:
-                buffer.append(pitch)
-                rms_buffer.append(rms_value)
+        prev = merged[-1]
+        gap = note.start - (prev.start + prev.duration)
+        if abs(note.pitch - prev.pitch) <= 0 and gap <= max(1e-6, frame_duration * 0.5):
+            prev.duration += note.duration + max(0.0, gap)
+            prev.velocity = int(round((prev.velocity + note.velocity) / 2))
         else:
-            buffer.append(pitch)
-            rms_buffer.append(rms_value)
-    if buffer:
-        flush_segment()
+            merged.append(note)
+    notes = merged
 
     valid_midi = tracked_midi[np.isfinite(tracked_midi)]
     pitch_median = float(np.median(valid_midi)) if valid_midi.size else None
@@ -403,11 +455,14 @@ def f0_to_note_events(
     instability_ratio = instability / max(1, int(voiced_frames))
     non_voiced_ratio = 1.0 - voiced_ratio
     note_change_norm = min(1.0, diagnostics.note_change_rate / 4.0)
+    # Score polyphonique: on donne plus de poids à l'instabilité "brute" (variations de pitch)
+    # pour capturer les cas où l'hysteresis stabilise mais le signal reste polyphonique.
     polyphony_score = float(
         np.clip(
-            np.mean(
-                [non_voiced_ratio, instability_ratio, note_change_norm, diagnostics.jump_rate]
-            ),
+            0.75 * instability_ratio
+            + 0.15 * note_change_norm
+            + 0.10 * diagnostics.jump_rate
+            + 0.05 * non_voiced_ratio,
             0.0,
             1.0,
         )
@@ -425,6 +480,32 @@ def f0_to_note_events(
         low_energy_ratio=diagnostics.low_energy_ratio,
     )
     return notes, stats, diagnostics
+
+
+def detect_onsets(tracker: PitchTrackerResult, logger=None) -> np.ndarray:
+    """Détecte les onsets (frames) sur la piste guitare filtrée."""
+    import librosa
+
+    if tracker.audio.size == 0 or tracker.sr <= 0:
+        return np.array([], dtype=int)
+    y = _apply_onset_band(tracker.audio, tracker.sr)
+    try:
+        frames = librosa.onset.onset_detect(
+            y=y,
+            sr=tracker.sr,
+            hop_length=tracker.hop_length,
+            backtrack=False,
+            units="frames",
+        )
+    except Exception:  # noqa: BLE001
+        frames = np.array([], dtype=int)
+    frames = np.asarray(frames, dtype=int)
+    frames = frames[np.isfinite(frames)]
+    frames = frames[(frames >= 0) & (frames < len(tracker.f0))]
+    frames = np.unique(frames)
+    if logger:
+        logger.info("Onsets détectés: %d", int(frames.size))
+    return frames
 
 
 def estimate_tempo(audio: np.ndarray, sr: int, logger=None) -> Tuple[float, str]:
@@ -690,21 +771,72 @@ def post_process_notes(
     tempo_value = float(tempo_bpm) if tempo_bpm and tempo_bpm > 0 else SETTINGS.default_tempo_bpm
     seconds_per_beat = 60.0 / tempo_value if tempo_value else 0.0
     grid = seconds_per_beat / subdiv
-    min_duration = 0.1 if quality == "fast" else 0.05
+    # Post-processing musical:
+    # - supprimer notes < 80–120ms
+    # - fusionner segments proches (±1 demi-ton, gap < 40ms)
+    min_duration = 0.12 if quality == "fast" else 0.08
     processed: List[NoteEvent] = []
     short_notes = 0
     out_of_range = 0
-    for note in notes:
-        start = round(note.start / grid) * grid
-        duration = round(note.duration / grid) * grid
-        duration = max(duration, grid)
-        if duration < min_duration:
-            short_notes += 1
+    sorted_notes = sorted(notes, key=lambda n: n.start)
+
+    # Fusion pré-quantification.
+    merged: List[NoteEvent] = []
+    for note in sorted_notes:
+        if not merged:
+            merged.append(note)
             continue
+        prev = merged[-1]
+        gap = note.start - (prev.start + prev.duration)
+        if abs(note.pitch - prev.pitch) <= 1 and gap <= 0.04:
+            prev_end = prev.start + prev.duration
+            new_end = max(prev_end, note.start + note.duration)
+            prev.duration = new_end - prev.start
+            prev.velocity = int(round((prev.velocity + note.velocity) / 2))
+        else:
+            merged.append(note)
+
+    for note in merged:
+        # Clamp range guitare (E2–E6).
         if note.pitch < 40 or note.pitch > 88:
             out_of_range += 1
             continue
-        processed.append(NoteEvent(start=start, duration=duration, pitch=note.pitch, velocity=note.velocity))
+        if note.duration < min_duration:
+            short_notes += 1
+            continue
+
+        # Quantification: on quantifie start ET end (durée implicite).
+        start_q = round(note.start / grid) * grid
+        end_q = round((note.start + note.duration) / grid) * grid
+        end_q = max(end_q, start_q + grid)
+        duration_q = end_q - start_q
+        if duration_q < min_duration:
+            short_notes += 1
+            continue
+        processed.append(
+            NoteEvent(
+                start=float(start_q),
+                duration=float(duration_q),
+                pitch=note.pitch,
+                velocity=note.velocity,
+            )
+        )
+
+    # Fusion post-quantification (pour éliminer des splits d'onsets).
+    processed = sorted(processed, key=lambda n: n.start)
+    final: List[NoteEvent] = []
+    for note in processed:
+        if not final:
+            final.append(note)
+            continue
+        prev = final[-1]
+        gap = note.start - (prev.start + prev.duration)
+        if abs(note.pitch - prev.pitch) <= 0 and abs(gap) <= 1e-6:
+            prev.duration += note.duration
+            prev.velocity = int(round((prev.velocity + note.velocity) / 2))
+        else:
+            final.append(note)
+    processed = final
     total = max(1, len(notes))
     return processed, {
         "short_ratio": short_notes / total,

@@ -20,6 +20,7 @@ from .pipeline import (
     build_score_json,
     compute_confidence,
     convert_to_wav,
+    detect_onsets,
     download_youtube_audio,
     ensure_dependencies,
     estimate_tempo,
@@ -126,7 +127,22 @@ def _process_monophonic_transcription(
     job: Job, candidate_path: str, logger, warnings: List[str], output_dir: str
 ) -> TranscriptionResult:
     tracker_result = run_pitch_tracker(candidate_path, logger)
-    notes, stats, diagnostics = f0_to_note_events(tracker_result)
+    onsets = detect_onsets(tracker_result, logger=logger)
+    onsets_json_path = os.path.join(output_dir, "onsets.json")
+    with open(onsets_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "hopLength": tracker_result.hop_length,
+                "sampleRate": tracker_result.sr,
+                "onsetFrames": [int(x) for x in onsets.tolist()],
+                "onsetTimes": [float(x) for x in (onsets * (tracker_result.hop_length / tracker_result.sr)).tolist()],
+            },
+            f,
+            ensure_ascii=True,
+            indent=2,
+        )
+
+    notes_raw, stats, diagnostics = f0_to_note_events(tracker_result, onset_frames=onsets)
     f0_preview_path = os.path.join(output_dir, "f0_preview.csv")
     _write_f0_preview_csv(
         f0_preview_path,
@@ -148,7 +164,7 @@ def _process_monophonic_transcription(
     tempo_detected = tempo_bpm if tempo_source != "default" else None
     if tempo_source == "default":
         warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-    processed, metrics = post_process_notes(notes, job.quality, tempo_bpm)
+    processed, metrics = post_process_notes(notes_raw, job.quality, tempo_bpm)
     if not processed:
         raise RuntimeError("Aucune note exploitable après post-traitement.")
     return TranscriptionResult(
@@ -451,6 +467,10 @@ def process_job(job_id: str) -> None:
             {
                 "transcriptionMode": job.transcription_mode,
                 "tempoDetected": detected_tempo,
+                "voiced_ratio": extraction_stats.voiced_ratio if extraction_stats else None,
+                "jump_rate": extraction_stats.jump_rate if extraction_stats else None,
+                "note_count_before_filters": note_events_count,
+                "note_count_after_filters": len(processed),
                 "avgVoicedRatio": extraction_stats.voiced_ratio if extraction_stats else None,
                 "instabilityRatio": extraction_stats.instability_ratio if extraction_stats else None,
                 "pitchMedian": extraction_stats.pitch_median if extraction_stats else None,
@@ -459,6 +479,9 @@ def process_job(job_id: str) -> None:
                 "pitchMode": pitch_mode,
                 "pitchChunks": pitch_chunks,
                 "f0PreviewPath": preview_path,
+                "onsetsPath": os.path.join(output_dir, "onsets.json")
+                if job.transcription_mode == "monophonic_tuner"
+                else None,
                 "polyphonyScore": chunk_stats.polyphony_score if chunk_stats else None,
                 "lowEnergyRatio": chunk_stats.low_energy_ratio if chunk_stats else None,
                 "warnings": list(warnings),
