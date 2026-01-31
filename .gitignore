@@ -1,0 +1,44 @@
+.DS_Store
+.env
+.env.*
+
+# Gradle / Android
+.gradle/
+build/
+**/build/
+**/.cxx/
+**/local.properties
+**/*.iml
+**/.idea/
+
+# Android outputs
+**/*.apk
+**/*.aab
+**/*.ap_
+**/captures/
+**/output-metadata.json
+
+# Keystores
+**/*.jks
+**/*.keystore
+
+# Python
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+
+# Server runtime data
+server/data/
+server/storage/
+server/logs/
+
+# Logs
+**/*.log
+**/logs.txt
+
+# OS / tooling
+*.swp
+*.swo

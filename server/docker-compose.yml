@@ -1,0 +1,32 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    environment:
+      - TABSERVER_REDIS_URL=redis://redis:6379/0
+      - TABSERVER_PUBLIC_URL=http://localhost:8000
+    volumes:
+      - ./data:/app/server/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    command: ["python", "-m", "server.worker"]
+    environment:
+      - TABSERVER_REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./data:/app/server/data
+    depends_on:
+      - redis

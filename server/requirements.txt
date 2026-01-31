@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+sqlalchemy
+redis
+rq
+yt-dlp
+mido
+basic-pitch
+demucs
