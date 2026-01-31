@@ -8,3 +8,6 @@ yt-dlp
 mido
 basic-pitch
 demucs
+librosa>=0.10.1
+numpy>=1.25
+scipy>=1.11

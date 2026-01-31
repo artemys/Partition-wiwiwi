@@ -23,6 +23,7 @@ from .schemas import (
     YoutubeRequest,
 )
 from .pipeline import (
+    MAX_HAND_POS,
     compare_tab_json_and_musicxml,
     load_tab_json,
     render_musicxml_to_pdf,
@@ -115,8 +116,11 @@ async def create_job(
     tuning: str = Query("EADGBE"),
     capo: int = Query(0),
     quality: str = Query("fast"),
+    transcriptionMode: str = Query("polyphonic_basic_pitch"),
     mode: Optional[str] = Query(None),
     target: str = Query("GUITAR_BEST_EFFORT"),
+    handSpan: int = Query(4),
+    preferLowFrets: bool = Query(False),
     inputIsIsolatedGuitar: bool = Query(False),
     startSeconds: Optional[int] = Query(None),
     endSeconds: Optional[int] = Query(None),
@@ -126,6 +130,12 @@ async def create_job(
 ):
     output_type = outputType.lower()
     quality = quality.lower()
+    transcription_mode = transcriptionMode.lower()
+    if transcription_mode not in ("monophonic_tuner", "polyphonic_basic_pitch"):
+        raise HTTPException(
+            status_code=400,
+            detail="transcriptionMode doit être 'monophonic_tuner' ou 'polyphonic_basic_pitch'.",
+        )
     if output_type not in ("tab", "score", "both"):
         raise HTTPException(status_code=400, detail="outputType doit être tab, score ou both.")
     if audio is None and body is None and request is not None:
@@ -163,6 +173,7 @@ async def create_job(
         raise HTTPException(status_code=400, detail="endSeconds doit être >= 0.")
     if startSeconds is not None and endSeconds is not None and endSeconds <= startSeconds:
         raise HTTPException(status_code=400, detail="endSeconds doit être > startSeconds.")
+    hand_span = max(1, min(MAX_HAND_POS, handSpan))
     job = Job(
         id=job_id,
         status="PENDING",
@@ -179,9 +190,12 @@ async def create_job(
         tuning=tuning.upper(),
         capo=capo,
         quality=quality,
+        hand_span=hand_span,
+        prefer_low_frets=1 if preferLowFrets else 0,
         mode=mode,
         target=target,
         warnings_json=json.dumps([]),
+        transcription_mode=transcription_mode,
     )
     db.add(job)
     db.commit()
@@ -280,6 +294,7 @@ def get_job_debug(job_id: str):
         except OSError:
             return None
 
+    debug_json_path = os.path.join(SETTINGS.data_dir, job_id, "debug.json")
     debug_paths = {
         "pdf": _absolute(job.pdf_path),
         "musicxml": _absolute(job.musicxml_path),
@@ -289,6 +304,7 @@ def get_job_debug(job_id: str):
         "scoreMusicxml": _absolute(job.score_musicxml_path),
         "scorePdf": _absolute(job.score_pdf_path),
         "logs": _absolute(job.logs_path),
+        "debugJson": _absolute(debug_json_path) if os.path.exists(debug_json_path) else None,
     }
     debug_sizes = {
         "pdf": _size(job.pdf_path),
@@ -298,6 +314,7 @@ def get_job_debug(job_id: str):
         "scoreJson": _size(job.score_json_path),
         "scoreMusicxml": _size(job.score_musicxml_path),
         "scorePdf": _size(job.score_pdf_path),
+        "debugJson": _size(debug_json_path),
     }
     last_musescore = parse_last_musescore_run(job.logs_path) if job.logs_path else None
     tab_json_count = None
@@ -326,14 +343,33 @@ def get_job_debug(job_id: str):
         "midiBpmDetected": debug_info.get("midiBpmDetected"),
         "tempoUsedForQuantization": debug_info.get("tempoUsedForQuantization"),
         "tempoSource": debug_info.get("tempoSource"),
+        "tempoDetected": debug_info.get("tempoDetected"),
         "divisions": debug_info.get("divisions"),
         "measureTicks": debug_info.get("measureTicks"),
         "scoreWrittenOctaveShift": debug_info.get("scoreWrittenOctaveShift"),
+        "writtenOctaveShift": debug_info.get("scoreWrittenOctaveShift"),
+        "avgVoicedRatio": debug_info.get("avgVoicedRatio"),
+        "instabilityRatio": debug_info.get("instabilityRatio"),
+        "pitchMedian": debug_info.get("pitchMedian"),
+        "pitchMin": debug_info.get("pitchMin"),
+        "pitchMax": debug_info.get("pitchMax"),
+        "notesCount": debug_info.get("noteEventsCount"),
+        "warnings": debug_info.get("warnings", []),
+        "transcriptionMode": job.transcription_mode,
         "noteEventsCount": debug_info.get("noteEventsCount"),
         "scoreJsonNotesCount": debug_info.get("scoreJsonNotesCount"),
         "tabJsonNotesCount": debug_info.get("tabJsonNotesCount"),
         "scoreMusicXmlNotesCount": debug_info.get("scoreMusicXmlNotesCount"),
         "tabMusicXmlNotesCount": debug_info.get("tabMusicXmlNotesCount"),
+        "playabilityScore": debug_info.get("playabilityScore"),
+        "playabilityCost": debug_info.get("playabilityCost"),
+        "handSpan": job.hand_span,
+        "preferLowFrets": bool(job.prefer_low_frets),
+        "fingeringDebugUrl": (
+            f"{SETTINGS.public_base_url}/files/{job_id}/fingering_debug.json"
+            if job.fingering_debug_path
+            else None
+        ),
     }
 
 
@@ -356,6 +392,7 @@ def download_file(job_id: str, file_name: str):
         "result.musicxml": job.musicxml_path,
         "result.pdf": job.pdf_path,
         "output.mid": job.midi_path,
+        "fingering_debug.json": job.fingering_debug_path,
     }
     target = path_map.get(file_name)
     db.close()

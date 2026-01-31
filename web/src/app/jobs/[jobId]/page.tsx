@@ -420,9 +420,25 @@ export default function JobDetailsPage() {
           <Card className="space-y-4">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Debug (dev)</h2>
-              <Button variant="ghost" disabled={!debugInfo} onClick={handleCopyDebug}>
-                Copier debug
-              </Button>
+              <div className="flex gap-2">
+                <Button variant="ghost" disabled={!debugInfo} onClick={handleCopyDebug}>
+                  Copier debug
+                </Button>
+                {debugInfo?.fingeringDebugUrl && (
+                  <Button
+                    variant="ghost"
+                    onClick={() =>
+                      window.open(
+                        debugInfo.fingeringDebugUrl ?? undefined,
+                        "_blank",
+                        "noopener,noreferrer"
+                      )
+                    }
+                  >
+                    Export fingering
+                  </Button>
+                )}
+              </div>
             </div>
             <div className="space-y-3 text-sm text-zinc-600 dark:text-zinc-300">
               <div className="space-y-2">
@@ -524,6 +540,22 @@ export default function JobDetailsPage() {
                         <span className="font-mono">{formatCount(debugInfo.tabMusicXmlNotesCount)}</span>
                       </p>
                     </div>
+                  </div>
+                  <div className="space-y-1 rounded-xl border border-zinc-200 bg-white/60 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-200">
+                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Jouabilité</p>
+                    <p>
+                      Score: <span className="font-mono">{formatDecimal(debugInfo.playabilityScore)}</span>
+                    </p>
+                    <p>
+                      Coût: <span className="font-mono">{formatDecimal(debugInfo.playabilityCost)}</span>
+                    </p>
+                    <p>
+                      Span: <span className="font-mono">{debugInfo.handSpan ?? "—"}</span>
+                    </p>
+                    <p>
+                      Bas du manche:&nbsp;
+                      <span className="font-mono">{debugInfo.preferLowFrets ? "Oui" : "Non"}</span>
+                    </p>
                   </div>
                   <div className="grid gap-3 md:grid-cols-2">
                     <div>

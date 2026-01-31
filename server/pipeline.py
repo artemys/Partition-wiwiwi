@@ -5,6 +5,8 @@ from collections import Counter
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import mido
+import numpy as np
+from scipy.signal import butter, lfilter
 
 from .config import SETTINGS
 from .utils import clamp, run_cmd, read_json, write_json
@@ -27,11 +29,265 @@ class TabNote:
     fret: int
 
 
+@dataclass
+class PitchTrackerResult:
+    audio: np.ndarray
+    sr: int
+    hop_length: int
+    f0: np.ndarray
+    voiced: np.ndarray
+    confidence: np.ndarray
+    rms: np.ndarray
+
+
+@dataclass
+class NoteExtractionStats:
+    voiced_ratio: float
+    instability_ratio: float
+    pitch_median: Optional[float]
+    pitch_min: Optional[float]
+    pitch_max: Optional[float]
+    notes_count: int
+
+
 DEFAULT_DIVISIONS = 4
 DEFAULT_TIME_SIGNATURE = "4/4"
 GUITAR_WRITTEN_SHIFT = 12
 LOW_PITCH_THRESHOLD = 55
 HIGH_PITCH_THRESHOLD = 79
+
+MAX_HAND_POS = 20
+DEFAULT_SPAN_FRETS = 4
+SHIFT_PENALTY = 2.0
+OUTSIDE_SPAN_PENALTY = 5.0
+STRING_JUMP_PENALTY = 0.5
+HIGH_FRET_PENALTY = 0.2
+LOW_FRET_BONUS = 0.3
+LOW_FRET_THRESHOLD = 7
+CHORD_SPAN_OVER_PENALTY = 8.0
+CHORD_DISPERSION_PENALTY = 0.15
+PLAYABILITY_COST_SCALE = 12.0
+
+
+def _butter_bandpass(lowcut: float, highcut: float, sr: int, order: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    nyquist = 0.5 * sr
+    low = max(lowcut / nyquist, 1e-6)
+    high = min(highcut / nyquist, 0.999)
+    if low >= high:
+        high = min(low + 0.01, 0.999)
+    return butter(order, [low, high], btype="band")
+
+
+def _apply_guitar_bandpass(y: np.ndarray, sr: int) -> np.ndarray:
+    try:
+        b, a = _butter_bandpass(80.0, min(6000.0, 0.499 * sr), sr)
+        return lfilter(b, a, y)
+    except ValueError:
+        return y
+
+
+def _apply_noise_gate(y: np.ndarray, threshold: float = 0.02) -> np.ndarray:
+    if y.size == 0:
+        return y
+    level = max(threshold, float(np.percentile(np.abs(y), 15)))
+    mask = np.abs(y) >= level
+    return y * mask
+
+
+def _velocity_from_rms(values: List[float], max_rms: float) -> int:
+    if not values:
+        return 64
+    avg = float(np.mean(values))
+    if max_rms <= 0:
+        return 64
+    scaled = avg / max_rms
+    return int(clamp(round(scaled * 127), 24, 127))
+
+
+def _hz_to_midi(hz: float) -> float:
+    return 69.0 + 12.0 * np.log2(hz / 440.0)
+
+
+def run_pitch_tracker(input_wav: str, logger=None) -> PitchTrackerResult:
+    import librosa
+
+    frame_length = 4096
+    hop_length = 512
+    y, sr = librosa.load(input_wav, sr=SETTINGS.sample_rate, mono=True)
+    filtered = _apply_guitar_bandpass(y, sr)
+    filtered = _apply_noise_gate(filtered)
+    try:
+        f0, voiced, voiced_confidence = librosa.pyin(
+            filtered,
+            fmin=82,
+            fmax=1319,
+            sr=sr,
+            frame_length=frame_length,
+            hop_length=hop_length,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Pitch tracking échoué: {exc}") from exc
+    if f0 is None:
+        raise RuntimeError("Pitch tracking n'a retourné aucune fréquence.")
+    smoothed = np.copy(f0)
+    window = 5
+    half = window // 2
+    for idx in range(len(smoothed)):
+        if not voiced[idx] or not np.isfinite(f0[idx]):
+            continue
+        start = max(0, idx - half)
+        end = min(len(smoothed), idx + half + 1)
+        block = f0[start:end]
+        block = block[np.isfinite(block)]
+        if block.size:
+            smoothed[idx] = np.median(block)
+    smoothed = np.clip(smoothed, 82.0, 1319.0, out=smoothed)
+    rms = librosa.feature.rms(y=filtered, frame_length=frame_length, hop_length=hop_length)[
+        0
+    ]
+    if logger:
+        voiced_ratio = float(np.count_nonzero(voiced)) / max(1, len(voiced))
+        logger.info("Pitch tracking frames: %s, voiced ratio: %.2f", len(voiced), voiced_ratio)
+    return PitchTrackerResult(
+        audio=filtered,
+        sr=sr,
+        hop_length=hop_length,
+        f0=smoothed,
+        voiced=voiced.astype(bool),
+        confidence=np.nan_to_num(np.asarray(voiced_confidence) if voiced_confidence is not None else np.zeros_like(voiced), nan=0.0),
+        rms=rms,
+    )
+
+
+def f0_to_note_events(
+    tracker: PitchTrackerResult,
+    min_duration_sec: float = 0.08,
+    pitch_change_threshold: float = 0.5,
+    stable_frames: int = 3,
+) -> Tuple[List[NoteEvent], NoteExtractionStats]:
+    frame_duration = tracker.hop_length / tracker.sr if tracker.sr else 0.0
+    frame_duration = max(frame_duration, 1e-4)
+    min_frames = max(1, int(np.ceil(min_duration_sec / frame_duration)))
+    valid = tracker.voiced & np.isfinite(tracker.f0)
+    midi_series = np.full_like(tracker.f0, np.nan)
+    midi_series[valid] = _hz_to_midi(tracker.f0[valid])
+    notes: List[NoteEvent] = []
+    buffer: List[float] = []
+    rms_buffer: List[float] = []
+    start_frame = 0
+    instability = 0
+    max_rms = float(np.max(tracker.rms)) if tracker.rms.size else 0.0
+
+    def flush_segment():
+        nonlocal buffer, rms_buffer, start_frame
+        if not buffer:
+            return
+        duration = len(buffer) * frame_duration
+        pitch_median = float(np.median(buffer))
+        pitch_value = int(round(pitch_median))
+        if duration < min_duration_sec:
+            if notes and abs(notes[-1].pitch - pitch_value) <= pitch_change_threshold:
+                notes[-1].duration += duration
+            buffer = []
+            rms_buffer = []
+            return
+        velocity = _velocity_from_rms(rms_buffer, max_rms)
+        notes.append(
+            NoteEvent(
+                start=start_frame * frame_duration,
+                duration=duration,
+                pitch=clamp(pitch_value, 0, 127),
+                velocity=velocity,
+            )
+        )
+        buffer = []
+        rms_buffer = []
+
+    for idx in range(len(tracker.f0)):
+        if idx >= len(tracker.rms):
+            rms_value = 0.0
+        else:
+            rms_value = float(tracker.rms[idx])
+        if not valid[idx]:
+            if buffer:
+                flush_segment()
+            buffer = []
+            rms_buffer = []
+            continue
+        pitch = float(midi_series[idx])
+        if not buffer:
+            start_frame = idx
+            buffer = [pitch]
+            rms_buffer = [rms_value]
+            continue
+        median_pitch = float(np.median(buffer))
+        if abs(pitch - median_pitch) > pitch_change_threshold:
+            instability += 1
+            if len(buffer) >= max(min_frames, stable_frames):
+                flush_segment()
+                start_frame = idx
+                buffer = [pitch]
+                rms_buffer = [rms_value]
+            else:
+                buffer.append(pitch)
+                rms_buffer.append(rms_value)
+        else:
+            buffer.append(pitch)
+            rms_buffer.append(rms_value)
+    if buffer:
+        flush_segment()
+
+    valid_midi = midi_series[np.isfinite(midi_series)]
+    pitch_median = float(np.median(valid_midi)) if valid_midi.size else None
+    pitch_min = float(np.min(valid_midi)) if valid_midi.size else None
+    pitch_max = float(np.max(valid_midi)) if valid_midi.size else None
+    voiced_frames = float(np.count_nonzero(valid))
+    total_frames = float(max(1, len(tracker.f0)))
+    stats = NoteExtractionStats(
+        voiced_ratio=voiced_frames / total_frames,
+        instability_ratio=instability / max(1, int(voiced_frames)),
+        pitch_median=pitch_median,
+        pitch_min=pitch_min,
+        pitch_max=pitch_max,
+        notes_count=len(notes),
+    )
+    return notes, stats
+
+
+def estimate_tempo(audio: np.ndarray, sr: int, logger=None) -> Tuple[float, str]:
+    import librosa
+
+    try:
+        tempo, _ = librosa.beat.beat_track(y=audio, sr=sr, start_bpm=SETTINGS.default_tempo_bpm)
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("Tempo detection failed: %s", exc)
+        tempo = None
+    if tempo and tempo > 0:
+        if logger:
+            logger.info("Beat tracking tempo: %.2f BPM", tempo)
+        return float(tempo), "beat_track"
+    if logger:
+        logger.info("Beat tracking fallback to default tempo: %.2f BPM", SETTINGS.default_tempo_bpm)
+    return float(SETTINGS.default_tempo_bpm), "default"
+
+
+@dataclass
+class _MonophonicChoice:
+    event_index: int
+    string_idx: int
+    fret: int
+    hand_pos_before: int
+    last_string_before: Optional[int]
+    hand_pos_after: int
+    candidate_cost: float
+
+
+@dataclass
+class _DPEntry:
+    cost: float
+    prev_state: Optional[Tuple[int, Optional[int]]]
+    choice: Optional[_MonophonicChoice]
 
 
 def parse_tuning(tuning: str, capo: int) -> Tuple[List[int], Optional[str]]:
@@ -444,6 +700,210 @@ def group_chords(notes: List[NoteEvent], threshold: float = 0.03) -> List[List[N
     return groups
 
 
+def _hand_pos_from_fret(fret: int) -> int:
+    return clamp(fret - 1, 0, MAX_HAND_POS)
+
+
+def _calculate_candidate_cost(
+    fret: int,
+    string_idx: int,
+    hand_pos: int,
+    last_string: Optional[int],
+    hand_span: int,
+    prefer_low: bool,
+) -> Tuple[float, int]:
+    new_hand_pos = _hand_pos_from_fret(fret)
+    shift_cost = abs(new_hand_pos - hand_pos) * SHIFT_PENALTY
+    outside = 0.0 if hand_pos <= fret <= hand_pos + hand_span else OUTSIDE_SPAN_PENALTY
+    string_cost = (
+        abs(string_idx - last_string) * STRING_JUMP_PENALTY if last_string is not None else 0.0
+    )
+    high_cost = max(0, fret - 12) * HIGH_FRET_PENALTY
+    low_bonus = LOW_FRET_BONUS if prefer_low and fret <= LOW_FRET_THRESHOLD else 0.0
+    total = shift_cost + outside + string_cost + high_cost - low_bonus
+    return total, new_hand_pos
+
+
+def _run_monophonic_dp(
+    notes: List[NoteEvent],
+    candidate_lists: List[List[Tuple[int, int]]],
+    hand_span: int,
+    prefer_low: bool,
+    start_hand_pos: int,
+    start_last_string: Optional[int],
+) -> Tuple[List[_MonophonicChoice], int, Optional[int], float]:
+    if not notes:
+        return [], start_hand_pos, start_last_string, 0.0
+
+    current_states: Dict[Tuple[int, Optional[int]], _DPEntry] = {
+        (start_hand_pos, start_last_string): _DPEntry(cost=0.0, prev_state=None, choice=None)
+    }
+    history: List[Dict[Tuple[int, Optional[int]], _DPEntry]] = []
+    for idx, candidates in enumerate(candidate_lists):
+        next_states: Dict[Tuple[int, Optional[int]], _DPEntry] = {}
+        for state, entry in current_states.items():
+            hand_pos, last_string = state
+            for string_idx, fret in candidates:
+                candidate_cost, next_hand_pos = _calculate_candidate_cost(
+                    fret, string_idx, hand_pos, last_string, hand_span, prefer_low
+                )
+                new_state = (next_hand_pos, string_idx)
+                new_cost = entry.cost + candidate_cost
+                choice = _MonophonicChoice(
+                    event_index=idx,
+                    string_idx=string_idx,
+                    fret=fret,
+                    hand_pos_before=hand_pos,
+                    last_string_before=last_string,
+                    hand_pos_after=next_hand_pos,
+                    candidate_cost=candidate_cost,
+                )
+                existing = next_states.get(new_state)
+                if existing is None or new_cost < existing.cost:
+                    next_states[new_state] = _DPEntry(
+                        cost=new_cost, prev_state=state, choice=choice
+                    )
+        if not next_states:
+            return [], start_hand_pos, start_last_string, float("inf")
+        history.append(next_states)
+        current_states = next_states
+
+    best_state, best_entry = min(current_states.items(), key=lambda item: item[1].cost)
+    final_choices: List[_MonophonicChoice] = []
+    state = best_state
+    for step in range(len(history) - 1, -1, -1):
+        entry = history[step][state]
+        if entry.choice is None or entry.prev_state is None:
+            break
+        final_choices.append(entry.choice)
+        state = entry.prev_state
+    final_choices.reverse()
+    total_cost = best_entry.cost
+    final_hand_pos, final_last_string = best_state
+    return final_choices, final_hand_pos, final_last_string, total_cost
+
+
+def _solve_monophonic_segment(
+    group_indices: List[int],
+    notes: List[NoteEvent],
+    open_strings: List[int],
+    hand_span: int,
+    prefer_low: bool,
+    start_hand_pos: int,
+    start_last_string: Optional[int],
+) -> Tuple[
+    List[TabNote],
+    List[Dict[str, Any]],
+    Dict[int, int],
+    int,
+    Optional[int],
+    float,
+]:
+    candidate_lists = [possible_positions(note.pitch, open_strings) for note in notes]
+    dp_notes: List[NoteEvent] = []
+    dp_candidates: List[List[Tuple[int, int]]] = []
+    dp_indices: List[int] = []
+    for idx, candidates in enumerate(candidate_lists):
+        if candidates:
+            dp_notes.append(notes[idx])
+            dp_candidates.append(candidates)
+            dp_indices.append(idx)
+
+    if not dp_notes:
+        debug_events = []
+        for idx, note in enumerate(notes):
+            debug_events.append(
+                {
+                    "type": "monophonic",
+                    "groupIndex": group_indices[idx],
+                    "timeStart": note.start,
+                    "duration": note.duration,
+                    "pitches": [note.pitch],
+                    "handPosBefore": start_hand_pos,
+                    "handPosAfter": start_hand_pos,
+                    "lastStringBefore": start_last_string,
+                    "chosen": None,
+                    "candidates": [],
+                    "noteMissing": True,
+                }
+            )
+        return [], debug_events, {}, start_hand_pos, start_last_string, 0.0
+
+    choices, final_hand_pos, final_last_string, total_cost = _run_monophonic_dp(
+        dp_notes,
+        dp_candidates,
+        hand_span,
+        prefer_low,
+        start_hand_pos,
+        start_last_string,
+    )
+
+    tab_notes: List[TabNote] = []
+    last_positions: Dict[int, int] = {}
+    choice_map = {dp_indices[idx]: choice for idx, choice in enumerate(choices)}
+    debug_events: List[Dict[str, Any]] = []
+    for original_idx, note in enumerate(notes):
+        event_debug = {
+            "type": "monophonic",
+            "groupIndex": group_indices[original_idx],
+            "timeStart": note.start,
+            "duration": note.duration,
+            "pitches": [note.pitch],
+            "handPosBefore": start_hand_pos,
+            "handPosAfter": start_hand_pos,
+            "lastStringBefore": start_last_string,
+            "chosen": None,
+            "candidates": [],
+        }
+        if original_idx in choice_map:
+            choice = choice_map[original_idx]
+            event_debug["handPosBefore"] = choice.hand_pos_before
+            event_debug["handPosAfter"] = choice.hand_pos_after
+            event_debug["lastStringBefore"] = choice.last_string_before
+            candidate_debug: List[Dict[str, Any]] = []
+            for string_idx, fret in candidate_lists[original_idx]:
+                candidate_cost, candidate_hand_pos = _calculate_candidate_cost(
+                    fret,
+                    string_idx,
+                    choice.hand_pos_before,
+                    choice.last_string_before,
+                    hand_span,
+                    prefer_low,
+                )
+                candidate_debug.append(
+                    {
+                        "stringIdx": string_idx,
+                        "stringNumber": 6 - string_idx,
+                        "fret": fret,
+                        "handPosAfter": candidate_hand_pos,
+                        "cost": candidate_cost,
+                    }
+                )
+            event_debug["candidates"] = candidate_debug
+            selected = {
+                "stringIdx": choice.string_idx,
+                "stringNumber": 6 - choice.string_idx,
+                "fret": choice.fret,
+                "handPosAfter": choice.hand_pos_after,
+                "cost": choice.candidate_cost,
+            }
+            event_debug["chosen"] = selected
+            tab_notes.append(
+                TabNote(
+                    timeStart=note.start,
+                    duration=note.duration,
+                    pitch=note.pitch,
+                    string=6 - choice.string_idx,
+                    fret=choice.fret,
+                )
+            )
+            last_positions[choice.string_idx] = choice.fret
+            debug_events.append(event_debug)
+        else:
+            event_debug["noteMissing"] = True
+            debug_events.append(event_debug)
+    return tab_notes, debug_events, last_positions, final_hand_pos, final_last_string, total_cost
+
 def possible_positions(pitch: int, open_strings: List[int], max_fret: int = 24) -> List[Tuple[int, int]]:
     positions = []
     for idx, open_pitch in enumerate(open_strings):
@@ -457,20 +917,64 @@ def assign_chord(
     notes: List[NoteEvent],
     open_strings: List[int],
     last_positions: Dict[int, int],
-) -> Dict[int, Tuple[int, int]]:
-    best_cost = float("inf")
-    best_assignment: Dict[int, Tuple[int, int]] = {}
-
+    hand_span: int = DEFAULT_SPAN_FRETS,
+    prefer_low: bool = False,
+) -> Tuple[Dict[int, Tuple[int, int]], int, float]:
     candidates = [possible_positions(n.pitch, open_strings) for n in notes]
     if any(len(c) == 0 for c in candidates):
-        return {}
+        return {}, 0, float("inf")
+
+    best_cost = float("inf")
+    best_assignment: Dict[int, Tuple[int, int]] = {}
+    best_hand_pos = 0
+
+    def evaluate_assignment(assignment: Dict[int, Tuple[int, int]]) -> Tuple[float, int]:
+        frets = [assignment[i][1] for i in range(len(notes))]
+        min_fret = min(frets)
+        max_fret = max(frets)
+        span_needed = max_fret - min_fret
+        hand_pos_candidate = clamp(min_fret, 0, MAX_HAND_POS)
+        hand_pos_candidate = clamp(hand_pos_candidate, 0, MAX_HAND_POS)
+        if max_fret > hand_pos_candidate + hand_span:
+            hand_pos_candidate = clamp(max_fret - hand_span, 0, MAX_HAND_POS)
+        if min_fret < hand_pos_candidate:
+            hand_pos_candidate = clamp(min_fret, 0, MAX_HAND_POS)
+        outside_penalty = 0.0
+        if min_fret < hand_pos_candidate or max_fret > hand_pos_candidate + hand_span:
+            outside_penalty = OUTSIDE_SPAN_PENALTY
+
+        span_over = max(0, span_needed - hand_span)
+        span_penalty = span_over * (
+            CHORD_SPAN_OVER_PENALTY if hand_span <= DEFAULT_SPAN_FRETS else CHORD_SPAN_OVER_PENALTY * 0.5
+        )
+        center = hand_pos_candidate + hand_span / 2
+        dispersion_penalty = sum(abs(fret - center) for fret in frets) * CHORD_DISPERSION_PENALTY
+        movement_cost = sum(
+            abs(fret - last_positions.get(string_idx, fret))
+            for string_idx, fret in assignment.values()
+        )
+        high_cost = sum(max(0, fret - 12) for _, fret in assignment.values()) * HIGH_FRET_PENALTY
+        low_bonus = sum(
+            LOW_FRET_BONUS for _, fret in assignment.values() if prefer_low and fret <= LOW_FRET_THRESHOLD
+        )
+        total_cost = (
+            movement_cost
+            + outside_penalty
+            + span_penalty
+            + dispersion_penalty
+            + high_cost
+            - low_bonus
+        )
+        return total_cost, hand_pos_candidate
 
     def recurse(i: int, used_strings: set, current_cost: float, assignment: Dict[int, Tuple[int, int]]):
-        nonlocal best_cost, best_assignment
+        nonlocal best_cost, best_assignment, best_hand_pos
         if i >= len(notes):
-            if current_cost < best_cost:
-                best_cost = current_cost
+            cost, hand_pos = evaluate_assignment(assignment)
+            if cost < best_cost:
+                best_cost = cost
                 best_assignment = dict(assignment)
+                best_hand_pos = hand_pos
             return
         if current_cost >= best_cost:
             return
@@ -479,37 +983,177 @@ def assign_chord(
                 continue
             last_fret = last_positions.get(string_idx)
             move_cost = abs(fret - last_fret) if last_fret is not None else 0
-            penalty = 5 if fret > 20 else 0
-            total = current_cost + move_cost + penalty
             assignment[i] = (string_idx, fret)
-            recurse(i + 1, used_strings | {string_idx}, total, assignment)
+            recurse(i + 1, used_strings | {string_idx}, current_cost + move_cost, assignment)
             assignment.pop(i, None)
 
     recurse(0, set(), 0.0, {})
-    return best_assignment
+    return best_assignment, best_hand_pos, best_cost
 
 
 def map_notes_to_tab(
     notes: List[NoteEvent],
     tuning: str,
     capo: int,
-) -> Tuple[List[TabNote], Optional[str]]:
+    hand_span: int = DEFAULT_SPAN_FRETS,
+    prefer_low_frets: bool = False,
+) -> Tuple[List[TabNote], Optional[str], Dict[str, Any]]:
+    hand_span = max(1, min(MAX_HAND_POS, hand_span))
     open_strings, tuning_warning = parse_tuning(tuning, capo)
     chord_groups = group_chords(notes)
     tab_notes: List[TabNote] = []
     last_positions: Dict[int, int] = {}
-    for group in chord_groups:
-        assignment = assign_chord(group, open_strings, last_positions)
-        if not assignment:
-            for note in group:
-                candidates = possible_positions(note.pitch, open_strings)
-                if not candidates:
+    fingering_debug: List[Dict[str, Any]] = []
+    total_cost = 0.0
+    processed_events = 0
+    current_hand_pos = 0
+    current_last_string: Optional[int] = None
+
+    idx = 0
+    while idx < len(chord_groups):
+        group = chord_groups[idx]
+        if len(group) == 1:
+            start_idx = idx
+            while idx < len(chord_groups) and len(chord_groups[idx]) == 1:
+                idx += 1
+            segment_groups = chord_groups[start_idx:idx]
+            segment_notes = [item[0] for item in segment_groups]
+            segment_indices = list(range(start_idx, idx))
+            (
+                segment_tab,
+                segment_debug,
+                segment_last_positions,
+                segment_hand_pos,
+                segment_last_string,
+                segment_cost,
+            ) = _solve_monophonic_segment(
+                segment_indices,
+                segment_notes,
+                open_strings,
+                hand_span,
+                prefer_low_frets,
+                current_hand_pos,
+                current_last_string,
+            )
+            tab_notes.extend(segment_tab)
+            fingering_debug.extend(segment_debug)
+            last_positions.update(segment_last_positions)
+            total_cost += segment_cost
+            processed_events += sum(1 for entry in segment_debug if entry.get("chosen"))
+            current_hand_pos = segment_hand_pos
+            current_last_string = segment_last_string
+            continue
+
+        assignment, chord_hand_pos, chord_cost = assign_chord(
+            group,
+            open_strings,
+            last_positions,
+            hand_span,
+            prefer_low_frets,
+        )
+
+        if assignment and chord_cost != float("inf"):
+            choice_entries: List[Dict[str, Any]] = []
+            chord_tab: List[TabNote] = []
+            for note_idx, note in enumerate(group):
+                string_idx, fret = assignment.get(note_idx, (None, None))
+                if string_idx is None:
                     continue
-                string_idx, fret = min(
-                    candidates,
-                    key=lambda pair: (abs(pair[1] - last_positions.get(pair[0], pair[1])), pair[1]),
+                chord_tab.append(
+                    TabNote(
+                        timeStart=note.start,
+                        duration=note.duration,
+                        pitch=note.pitch,
+                        string=6 - string_idx,
+                        fret=fret,
+                    )
                 )
                 last_positions[string_idx] = fret
+                choice_entries.append(
+                    {
+                        "noteIndex": note_idx,
+                        "stringIdx": string_idx,
+                        "stringNumber": 6 - string_idx,
+                        "fret": fret,
+                    }
+                )
+            tab_notes.extend(chord_tab)
+            fingering_debug.append(
+                {
+                    "type": "chord",
+                    "groupIndex": idx,
+                    "timeStart": group[0].start,
+                    "duration": max(n.duration for n in group),
+                    "pitches": [n.pitch for n in group],
+                    "handPosBefore": current_hand_pos,
+                    "handPosAfter": chord_hand_pos,
+                    "lastStringBefore": current_last_string,
+                    "chosen": choice_entries,
+                    "playabilityCost": chord_cost,
+                }
+            )
+            total_cost += chord_cost
+            processed_events += 1
+            current_hand_pos = chord_hand_pos
+            if choice_entries:
+                current_last_string = max(choice_entries, key=lambda entry: entry["fret"])["stringIdx"]
+        else:
+            for note in group:
+                candidates = possible_positions(note.pitch, open_strings)
+                event_debug = {
+                    "type": "chordFallback",
+                    "groupIndex": idx,
+                    "timeStart": note.start,
+                    "duration": note.duration,
+                    "pitches": [note.pitch],
+                    "handPosBefore": current_hand_pos,
+                    "handPosAfter": current_hand_pos,
+                    "lastStringBefore": current_last_string,
+                    "chosen": None,
+                    "candidates": [],
+                }
+                if not candidates:
+                    event_debug["noteMissing"] = True
+                    fingering_debug.append(event_debug)
+                    continue
+                best_choice = None
+                best_cost = float("inf")
+                fallback_candidates: List[Dict[str, Any]] = []
+                for string_idx, fret in candidates:
+                    candidate_cost, candidate_hand_pos = _calculate_candidate_cost(
+                        fret,
+                        string_idx,
+                        current_hand_pos,
+                        current_last_string,
+                        hand_span,
+                        prefer_low_frets,
+                    )
+                    fallback_candidates.append(
+                        {
+                            "stringIdx": string_idx,
+                            "stringNumber": 6 - string_idx,
+                            "fret": fret,
+                            "handPosAfter": candidate_hand_pos,
+                            "cost": candidate_cost,
+                        }
+                    )
+                    if candidate_cost < best_cost:
+                        best_cost = candidate_cost
+                        best_choice = (string_idx, fret, candidate_hand_pos, candidate_cost)
+                if best_choice is None:
+                    event_debug["noteMissing"] = True
+                    fingering_debug.append(event_debug)
+                    continue
+                string_idx, fret, new_hand_pos, chosen_cost = best_choice
+                event_debug["candidates"] = fallback_candidates
+                event_debug["handPosAfter"] = new_hand_pos
+                event_debug["chosen"] = {
+                    "stringIdx": string_idx,
+                    "stringNumber": 6 - string_idx,
+                    "fret": fret,
+                    "handPosAfter": new_hand_pos,
+                    "cost": chosen_cost,
+                }
                 tab_notes.append(
                     TabNote(
                         timeStart=note.start,
@@ -519,20 +1163,31 @@ def map_notes_to_tab(
                         fret=fret,
                     )
                 )
-            continue
-        for note_idx, (string_idx, fret) in assignment.items():
-            note = group[note_idx]
-            last_positions[string_idx] = fret
-            tab_notes.append(
-                TabNote(
-                    timeStart=note.start,
-                    duration=note.duration,
-                    pitch=note.pitch,
-                    string=6 - string_idx,
-                    fret=fret,
-                )
-            )
-    return sorted(tab_notes, key=lambda n: n.timeStart), tuning_warning
+                last_positions[string_idx] = fret
+                total_cost += chosen_cost
+                processed_events += 1
+                current_hand_pos = new_hand_pos
+                current_last_string = string_idx
+                fingering_debug.append(event_debug)
+        idx += 1
+
+    average_cost = total_cost / max(1, processed_events)
+    playability_score = clamp(
+        1.0 - min(1.0, average_cost / PLAYABILITY_COST_SCALE),
+        0.0,
+        1.0,
+    )
+
+    playability_debug = {
+        "handSpan": hand_span,
+        "preferLowFrets": prefer_low_frets,
+        "totalCost": total_cost,
+        "averageCost": average_cost,
+        "playabilityScore": playability_score,
+        "events": fingering_debug,
+    }
+
+    return sorted(tab_notes, key=lambda n: n.timeStart), tuning_warning, playability_debug
 
 
 def compute_confidence(metrics: Dict[str, float], notes: List[NoteEvent]) -> float:

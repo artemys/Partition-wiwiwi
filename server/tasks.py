@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -10,18 +10,23 @@ from .db import SessionLocal
 from .models import Job
 from .pipeline import (
     DEFAULT_DIVISIONS,
+    NoteEvent,
+    NoteExtractionStats,
     build_score_json,
     compute_confidence,
     convert_to_wav,
     download_youtube_audio,
     ensure_dependencies,
+    estimate_tempo,
     ffprobe_duration,
+    f0_to_note_events,
     load_midi_notes,
     map_notes_to_tab,
     post_process_notes,
     render_musicxml_to_pdf,
     run_basic_pitch,
     run_demucs,
+    run_pitch_tracker,
     trim_wav,
     write_score_musicxml,
     write_tab_musicxml,
@@ -58,6 +63,29 @@ def _derive_title_artist(job: Job) -> Tuple[str, str]:
     if job.source_url:
         artist = "YouTube"
     return title, artist
+
+
+def _process_monophonic_transcription(
+    job: Job, candidate_path: str, logger, warnings: List[str]
+) -> Tuple[List[NoteEvent], Dict[str, float], float, str, Optional[float], Optional[NoteExtractionStats]]:
+    tracker = run_pitch_tracker(candidate_path, logger)
+    notes, stats = f0_to_note_events(tracker)
+    logger.info(
+        "Monophonic extraction: %d notes, instability %.2f, voiced ratio %.2f",
+        stats.notes_count,
+        stats.instability_ratio,
+        stats.voiced_ratio,
+    )
+    if stats.instability_ratio > 0.4 and stats.notes_count > 0:
+        raise RuntimeError("Signal trop polyphonique, essayez le mode polyphonique.")
+    tempo_bpm, tempo_source = estimate_tempo(tracker.audio, tracker.sr, logger)
+    tempo_detected = tempo_bpm if tempo_source != "default" else None
+    if tempo_source == "default":
+        warnings.append("Tempo inconnu, valeur par défaut utilisée.")
+    processed, metrics = post_process_notes(notes, job.quality, tempo_bpm)
+    if not processed:
+        raise RuntimeError("Aucune note exploitable après post-traitement.")
+    return processed, metrics, tempo_bpm, tempo_source, tempo_detected, stats
 
 
 def process_job(job_id: str) -> None:
@@ -130,28 +158,41 @@ def process_job(job_id: str) -> None:
         else:
             warnings.append("Piste guitare isolée: Demucs ignoré.")
 
-        _stage(db, job_id, "TRANSCRIPTION_BASIC_PITCH", 55, logger, "Transcription audio -> MIDI.")
-        midi_dir = os.path.join(output_dir, "midi")
-        ensure_dir(midi_dir)
-        midi_generated = run_basic_pitch(candidate_path, midi_dir, logger)
-        midi_path = os.path.join(output_dir, "output.mid")
-        shutil.copyfile(midi_generated, midi_path)
-
-        _stage(db, job_id, "POST_PROCESSING", 70, logger, "Nettoyage et quantification des notes.")
-        notes, detected_tempo = load_midi_notes(midi_path)
-        if detected_tempo:
-            logger.info("BPM détecté depuis MIDI: %.2f", detected_tempo)
+        if job.transcription_mode == "monophonic_tuner":
+            _stage(db, job_id, "TRANSCRIPTION_MONOPHONIC", 55, logger, "Transcription monophonique type accordeur.")
+            (
+                processed,
+                metrics,
+                tempo_used,
+                tempo_source,
+                detected_tempo,
+                extraction_stats,
+            ) = _process_monophonic_transcription(job, candidate_path, logger, warnings)
+            note_events_count = len(processed)
+            midi_path = None
         else:
-            logger.warning("Aucun BPM détecté depuis MIDI.")
-        tempo_used = detected_tempo if detected_tempo and detected_tempo > 0 else SETTINGS.default_tempo_bpm
-        tempo_source = "midi" if detected_tempo and detected_tempo > 0 else "default"
-        if tempo_source == "default":
-            warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-        logger.info("Tempo utilisé pour quantization: %.2f BPM", tempo_used)
-        processed, metrics = post_process_notes(notes, job.quality, tempo_used)
-        if not processed:
-            raise RuntimeError("Aucune note exploitable après post-traitement.")
-        note_events_count = len(processed)
+            _stage(db, job_id, "TRANSCRIPTION_BASIC_PITCH", 55, logger, "Transcription audio -> MIDI.")
+            midi_dir = os.path.join(output_dir, "midi")
+            ensure_dir(midi_dir)
+            midi_generated = run_basic_pitch(candidate_path, midi_dir, logger)
+            midi_path = os.path.join(output_dir, "output.mid")
+            shutil.copyfile(midi_generated, midi_path)
+            _stage(db, job_id, "POST_PROCESSING", 70, logger, "Nettoyage et quantification des notes.")
+            notes, detected_tempo = load_midi_notes(midi_path)
+            if detected_tempo:
+                logger.info("BPM détecté depuis MIDI: %.2f", detected_tempo)
+            else:
+                logger.warning("Aucun BPM détecté depuis MIDI.")
+            tempo_used = detected_tempo if detected_tempo and detected_tempo > 0 else SETTINGS.default_tempo_bpm
+            tempo_source = "midi" if detected_tempo and detected_tempo > 0 else "default"
+            if tempo_source == "default":
+                warnings.append("Tempo inconnu, valeur par défaut utilisée.")
+            logger.info("Tempo utilisé pour quantization: %.2f BPM", tempo_used)
+            processed, metrics = post_process_notes(notes, job.quality, tempo_used)
+            if not processed:
+                raise RuntimeError("Aucune note exploitable après post-traitement.")
+            note_events_count = len(processed)
+            extraction_stats = None
 
         divisions = DEFAULT_DIVISIONS
         measure_ticks = divisions * 4
@@ -178,7 +219,15 @@ def process_job(job_id: str) -> None:
             divisions,
             measure_ticks,
         )
-        tab_notes, tuning_warning = map_notes_to_tab(processed, job.tuning, job.capo)
+        tab_notes, tuning_warning, playability_debug = map_notes_to_tab(
+            processed,
+            job.tuning,
+            job.capo,
+            hand_span=job.hand_span,
+            prefer_low_frets=bool(job.prefer_low_frets),
+        )
+        fingering_debug_path = os.path.join(output_dir, "fingering_debug.json")
+        write_json(fingering_debug_path, playability_debug)
         if tuning_warning:
             warnings.append(tuning_warning)
         tab_txt_path = os.path.join(output_dir, "tab.txt")
@@ -231,6 +280,10 @@ def process_job(job_id: str) -> None:
             raise RuntimeError("PDF partition non généré.")
 
         score_metadata = score_json.get("metadata", {})
+        confidence = compute_confidence(metrics, processed)
+        if confidence < 0.35:
+            warnings.append("Confidence faible: piste guitare isolée recommandée.")
+
         debug_info = {
             "midiBpmDetected": detected_tempo,
             "tempoUsedForQuantization": tempo_used,
@@ -243,13 +296,26 @@ def process_job(job_id: str) -> None:
             "tabJsonNotesCount": tab_json_notes,
             "scoreMusicXmlNotesCount": score_musicxml_notes_count,
             "tabMusicXmlNotesCount": tab_musicxml_notes_count,
+            "playabilityScore": playability_debug.get("playabilityScore"),
+            "playabilityCost": playability_debug.get("totalCost"),
+            "handSpan": job.hand_span,
+            "preferLowFrets": bool(job.prefer_low_frets),
+            "fingeringDebugPath": fingering_debug_path,
         }
-
-        confidence = compute_confidence(metrics, processed)
-
-        if confidence < 0.35:
-            warnings.append("Confidence faible: piste guitare isolée recommandée.")
-
+        debug_info.update(
+            {
+                "transcriptionMode": job.transcription_mode,
+                "tempoDetected": detected_tempo,
+                "avgVoicedRatio": extraction_stats.voiced_ratio if extraction_stats else None,
+                "instabilityRatio": extraction_stats.instability_ratio if extraction_stats else None,
+                "pitchMedian": extraction_stats.pitch_median if extraction_stats else None,
+                "pitchMin": extraction_stats.pitch_min if extraction_stats else None,
+                "pitchMax": extraction_stats.pitch_max if extraction_stats else None,
+                "warnings": list(warnings),
+            }
+        )
+        debug_json_path = os.path.join(output_dir, "debug.json")
+        write_json(debug_json_path, debug_info)
         _update_job(
             db,
             job_id,
@@ -267,6 +333,7 @@ def process_job(job_id: str) -> None:
             score_musicxml_path=score_musicxml_path,
             score_pdf_path=score_pdf_path,
             midi_path=midi_path,
+            fingering_debug_path=fingering_debug_path,
             debug_info_json=json.dumps(debug_info),
         )
     except Exception as exc:  # noqa: BLE001

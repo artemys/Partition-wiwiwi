@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,6 +11,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import {
+  getPlayabilitySpan,
+  getPreferLowFrets,
+  type PlayabilitySpan,
+} from "@/lib/storage";
 import { createJob } from "@/lib/api";
 
 const youtubeRegex =
@@ -23,6 +29,7 @@ const formSchema = z
     tuning: z.string().trim().min(1, "Tuning requis."),
     capo: z.number().min(0).max(12),
     quality: z.enum(["fast", "accurate"]),
+    transcriptionMode: z.enum(["monophonic_tuner", "polyphonic_basic_pitch"]),
     startSeconds: z.number().int().min(0).max(12 * 60).optional(),
     endSeconds: z.number().int().min(0).max(12 * 60).optional(),
   })
@@ -75,12 +82,21 @@ export default function NewTranscriptionPage() {
       tuning: "EADGBE",
       capo: 0,
       quality: "fast",
+      transcriptionMode: "polyphonic_basic_pitch",
       youtubeUrl: "",
       audioFile: null,
       startSeconds: undefined,
       endSeconds: undefined,
     },
   });
+
+  const [playabilitySpan, setPlayabilitySpan] = useState<PlayabilitySpan>(4);
+  const [preferLowFrets, setPreferLowFrets] = useState(false);
+
+  useEffect(() => {
+    setPlayabilitySpan(getPlayabilitySpan());
+    setPreferLowFrets(getPreferLowFrets());
+  }, []);
 
   const onSubmit = async (values: FormValues) => {
     try {
@@ -89,6 +105,9 @@ export default function NewTranscriptionPage() {
         tuning: values.tuning,
         capo: values.capo,
         quality: values.quality,
+        transcriptionMode: values.transcriptionMode,
+        handSpan: playabilitySpan,
+        preferLowFrets,
         audioFile: values.audioFile,
         youtubeUrl: values.youtubeUrl || null,
         startSeconds: values.startSeconds,
@@ -168,6 +187,16 @@ export default function NewTranscriptionPage() {
                 <option value="accurate">Précis</option>
               </Select>
             </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="transcriptionMode">Mode automatique</Label>
+            <Select id="transcriptionMode" {...register("transcriptionMode")}>
+              <option value="monophonic_tuner">Auto (type accordeur) — riffs/lead</option>
+              <option value="polyphonic_basic_pitch">Auto (polyphonique) — accords</option>
+            </Select>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              Le mode accordeur suit une seule ligne mélodique, le mode polyphonique vise les accords.
+            </p>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">

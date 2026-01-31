@@ -44,10 +44,13 @@ export async function createJob(params: {
   tuning: string;
   capo: number;
   quality: "fast" | "accurate";
+  transcriptionMode?: "monophonic_tuner" | "polyphonic_basic_pitch";
   audioFile?: File | null;
   youtubeUrl?: string | null;
   startSeconds?: number;
   endSeconds?: number;
+  handSpan?: number;
+  preferLowFrets?: boolean;
 }) {
   const query = new URLSearchParams({
     outputType: params.outputType,
@@ -55,6 +58,14 @@ export async function createJob(params: {
     capo: String(params.capo),
     quality: params.quality,
   });
+  const transcriptionMode = params.transcriptionMode ?? "polyphonic_basic_pitch";
+  query.set("transcriptionMode", transcriptionMode);
+  if (Number.isFinite(params.handSpan ?? NaN)) {
+    query.set("handSpan", String(params.handSpan));
+  }
+  if (params.preferLowFrets) {
+    query.set("preferLowFrets", "true");
+  }
   if (Number.isFinite(params.startSeconds)) {
     query.set("startSeconds", String(params.startSeconds));
   }

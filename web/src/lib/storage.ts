@@ -1,5 +1,7 @@
 const API_URL_OVERRIDE_KEY = "tabscore_api_url_override";
 const EXPORT_FORMAT_KEY = "tabscore_export_format";
+const PLAYABILITY_SPAN_KEY = "tabscore_playability_span";
+const PREFER_LOW_FRETS_KEY = "tabscore_prefer_low_frets";
 
 export type ExportFormat = "pdf" | "musicxml" | "tab" | "midi";
 
@@ -40,4 +42,45 @@ export function setPreferredExportFormat(value: ExportFormat) {
     return;
   }
   localStorage.setItem(EXPORT_FORMAT_KEY, value);
+}
+
+export type PlayabilitySpan = 4 | 5 | 6;
+
+export function getPlayabilitySpan(): PlayabilitySpan {
+  if (typeof window === "undefined") {
+    return 4;
+  }
+  const value = localStorage.getItem(PLAYABILITY_SPAN_KEY);
+  if (value === "5") {
+    return 5;
+  }
+  if (value === "6") {
+    return 6;
+  }
+  return 4;
+}
+
+export function setPlayabilitySpan(value: PlayabilitySpan) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  localStorage.setItem(PLAYABILITY_SPAN_KEY, String(value));
+}
+
+export function getPreferLowFrets(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  return localStorage.getItem(PREFER_LOW_FRETS_KEY) === "1";
+}
+
+export function setPreferLowFrets(value: boolean) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (value) {
+    localStorage.setItem(PREFER_LOW_FRETS_KEY, "1");
+  } else {
+    localStorage.removeItem(PREFER_LOW_FRETS_KEY);
+  }
 }

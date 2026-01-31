@@ -30,8 +30,11 @@ class Job(Base):
     tuning = Column(String, nullable=False, default="EADGBE")
     capo = Column(Integer, nullable=False, default=0)
     quality = Column(String, nullable=False, default="fast")
+    hand_span = Column(Integer, nullable=False, default=4)
+    prefer_low_frets = Column(Integer, nullable=False, default=0)
     mode = Column(String, nullable=True)
     target = Column(String, nullable=True)
+    transcription_mode = Column(String, nullable=False, default="polyphonic_basic_pitch")
 
     duration_seconds = Column(Float, nullable=True)
     tempo_bpm = Column(Float, nullable=True)
@@ -45,4 +48,5 @@ class Job(Base):
     score_pdf_path = Column(Text, nullable=True)
     midi_path = Column(Text, nullable=True)
     logs_path = Column(Text, nullable=True)
+    fingering_debug_path = Column(Text, nullable=True)
     debug_info_json = Column(Text, nullable=True)

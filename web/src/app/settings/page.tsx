@@ -4,29 +4,41 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import {
   getApiUrlOverride,
   getPreferredExportFormat,
+  getPlayabilitySpan,
+  getPreferLowFrets,
   setApiUrlOverride,
   setPreferredExportFormat,
+  setPlayabilitySpan,
+  setPreferLowFrets,
   type ExportFormat,
+  type PlayabilitySpan,
 } from "@/lib/storage";
 
 export default function SettingsPage() {
   const [apiUrl, setApiUrl] = useState("");
   const [format, setFormat] = useState<ExportFormat>("pdf");
+  const [playabilitySpan, setPlayabilitySpanState] = useState<PlayabilitySpan>(4);
+  const [preferLowFrets, setPreferLowFretsState] = useState(false);
 
   useEffect(() => {
     setApiUrl(getApiUrlOverride() ?? "");
     setFormat(getPreferredExportFormat() ?? "pdf");
+    setPlayabilitySpanState(getPlayabilitySpan());
+    setPreferLowFretsState(getPreferLowFrets());
   }, []);
 
   const handleSave = () => {
     setApiUrlOverride(apiUrl.trim());
     setPreferredExportFormat(format);
+    setPlayabilitySpan(playabilitySpan);
+    setPreferLowFrets(preferLowFrets);
     toast.success("Paramètres enregistrés.");
   };
 
@@ -60,6 +72,29 @@ export default function SettingsPage() {
             <option value="tab">TAB texte</option>
             <option value="midi">MIDI</option>
           </Select>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="playabilitySpan">Largeur de main</Label>
+            <Select
+              id="playabilitySpan"
+              value={String(playabilitySpan)}
+              onChange={(event) => setPlayabilitySpanState(Number(event.target.value) as PlayabilitySpan)}
+            >
+              <option value="4">Main normale (span 4)</option>
+              <option value="5">Main large (span 5)</option>
+              <option value="6">Main très large (span 6)</option>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <Checkbox
+              id="preferLowFrets"
+              checked={preferLowFrets}
+              onChange={(event) => setPreferLowFretsState(event.target.checked)}
+            >
+              Préférer les positions basses
+            </Checkbox>
+          </div>
         </div>
         <Button onClick={handleSave}>Enregistrer</Button>
       </Card>

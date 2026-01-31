@@ -14,6 +14,10 @@ def _make_tab_json(events: List[Dict[str, object]]) -> Dict[str, object]:
     }
 
 
+def _chunk_line(value: str) -> List[str]:
+    return [value[i : i + 3] for i in range(0, len(value), 3)]
+
+
 def test_render_tab_txt_from_json_places_notes_in_expected_columns():
     events = [
         {"startTick": 0, "durationTick": 1, "notes": [{"string": 1, "fret": 3}]},
@@ -34,9 +38,9 @@ def test_render_tab_txt_from_json_places_notes_in_expected_columns():
         if line.startswith(prefixes)
     }
 
-    e_cells = lines["e"].split("|")[1:-1]
-    g_cells = lines["G"].split("|")[1:-1]
-    E_cells = lines["E"].split("|")[1:-1]
+    e_cells = _chunk_line(lines["e"].split("|")[1])
+    g_cells = _chunk_line(lines["G"].split("|")[1])
+    E_cells = _chunk_line(lines["E"].split("|")[1])
 
     assert e_cells[0] == "3--"
     assert g_cells[4] == "5--"

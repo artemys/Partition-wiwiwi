@@ -2,6 +2,23 @@
 .env
 .env.*
 
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Node dependencies and build artifacts
+node_modules/
+web/node_modules/
+dist/
+
+# IDEs
+.vscode/
+
+# Documentation artifacts
+*.md
+
 # Gradle / Android
 .gradle/
 build/
