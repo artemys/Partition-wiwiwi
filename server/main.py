@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 
 import redis
-from fastapi import Body, FastAPI, File, UploadFile, Query, HTTPException
+from fastapi import Body, FastAPI, File, UploadFile, Query, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from .config import SETTINGS
@@ -36,8 +36,28 @@ def _save_upload(audio: UploadFile, job_dir: str) -> str:
     ensure_dir(job_dir)
     filename = audio.filename or "upload.bin"
     extension = os.path.splitext(filename)[1].lower()
-    if extension not in (".mp3", ".wav", ".m4a"):
-        raise HTTPException(status_code=400, detail="Format audio non supporté (mp3, wav, m4a uniquement).")
+    content_type = (audio.content_type or "").lower()
+    allowed_ext = {".mp3", ".wav", ".m4a", ".aac"}
+    mime_map = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/m4a": ".m4a",
+        "audio/mp4": ".m4a",
+        "audio/aac": ".aac",
+    }
+    if extension not in allowed_ext:
+        inferred = mime_map.get(content_type)
+        if inferred:
+            extension = inferred
+        elif content_type.startswith("audio/"):
+            extension = ".wav"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Format audio non supporté (mp3, wav, m4a, aac uniquement).",
+            )
     output_path = os.path.join(job_dir, f"raw{extension}")
     max_bytes = SETTINGS.max_upload_mb * 1024 * 1024
     size = 0
@@ -76,11 +96,19 @@ async def create_job(
     inputIsIsolatedGuitar: bool = Query(False),
     audio: UploadFile = File(None),
     body: Optional[YoutubeRequest] = Body(default=None),
+    request: Request = None,
 ):
     output_type = outputType.lower()
     quality = quality.lower()
     if output_type not in ("tab", "score", "both"):
         raise HTTPException(status_code=400, detail="outputType doit être tab, score ou both.")
+    if audio is None and body is None and request is not None:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            payload = None
+        if isinstance(payload, dict) and payload.get("youtubeUrl"):
+            body = YoutubeRequest(youtubeUrl=payload["youtubeUrl"])
     if audio is None and body is None:
         raise HTTPException(status_code=400, detail="Fichier audio ou youtubeUrl requis.")
     if audio is not None and body is not None:

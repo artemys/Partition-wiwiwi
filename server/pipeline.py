@@ -106,6 +106,7 @@ def convert_to_wav(input_path: str, output_path: str, logger) -> None:
         [
             SETTINGS.ffmpeg_path,
             "-y",
+            "-nostdin",
             "-i",
             input_path,
             "-ac",
