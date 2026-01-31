@@ -23,6 +23,8 @@ class Job(Base):
     input_filename = Column(Text, nullable=True)
     input_path = Column(Text, nullable=True)
     input_is_isolated = Column(Integer, nullable=False, default=0)
+    start_seconds = Column(Integer, nullable=True)
+    end_seconds = Column(Integer, nullable=True)
 
     output_type = Column(String, nullable=False, default="both")
     tuning = Column(String, nullable=False, default="EADGBE")

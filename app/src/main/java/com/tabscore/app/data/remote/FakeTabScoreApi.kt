@@ -31,7 +31,9 @@ class FakeTabScoreApi : TabScoreRemoteApi {
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse {
         delay(400)
         val jobId = UUID.randomUUID().toString()
@@ -53,7 +55,9 @@ class FakeTabScoreApi : TabScoreRemoteApi {
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse {
         delay(400)
         val jobId = UUID.randomUUID().toString()

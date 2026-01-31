@@ -53,7 +53,7 @@ export TEST_AUDIO_FILE="/chemin/vers/audio.mp3"
 ## Endpoints REST
 
 - `POST /jobs` (multipart `audio` ou JSON `{ youtubeUrl }`)
-  - Query: `outputType=tab|score|both`, `tuning=EADGBE`, `capo=0`, `quality=fast|accurate`, `mode`, `target=GUITAR_BEST_EFFORT`, `inputIsIsolatedGuitar=false`
+  - Query: `outputType=tab|score|both`, `tuning=EADGBE`, `capo=0`, `quality=fast|accurate`, `mode`, `target=GUITAR_BEST_EFFORT`, `inputIsIsolatedGuitar=false`, `startSeconds`, `endSeconds`
 - `GET /jobs/{jobId}`
 - `GET /jobs/{jobId}/result`
 - `DELETE /jobs/{jobId}`

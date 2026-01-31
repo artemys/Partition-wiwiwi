@@ -21,7 +21,9 @@ class RealTabScoreApi(
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse {
         val body = audioBytes.toRequestBody(mimeType.toMediaType())
         val part = MultipartBody.Part.createFormData("audio", filename, body)
@@ -33,7 +35,9 @@ class RealTabScoreApi(
             tuning = tuning,
             capo = capo,
             mode = mode,
-            quality = quality
+            quality = quality,
+            startSeconds = startSeconds,
+            endSeconds = endSeconds
         )
     }
 
@@ -45,7 +49,9 @@ class RealTabScoreApi(
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse {
         return retrofitApi.createJobFromYoutube(
             body = YoutubeRequest(youtubeUrl),
@@ -55,7 +61,9 @@ class RealTabScoreApi(
             tuning = tuning,
             capo = capo,
             mode = mode,
-            quality = quality
+            quality = quality,
+            startSeconds = startSeconds,
+            endSeconds = endSeconds
         )
     }
 

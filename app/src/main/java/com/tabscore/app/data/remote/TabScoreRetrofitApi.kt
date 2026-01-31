@@ -25,7 +25,9 @@ interface TabScoreRetrofitApi {
         @Query("tuning") tuning: String,
         @Query("capo") capo: Int,
         @Query("mode") mode: String,
-        @Query("quality") quality: String
+        @Query("quality") quality: String,
+        @Query("startSeconds") startSeconds: Int?,
+        @Query("endSeconds") endSeconds: Int?
     ): CreateJobResponse
 
     @POST("jobs")
@@ -37,7 +39,9 @@ interface TabScoreRetrofitApi {
         @Query("tuning") tuning: String,
         @Query("capo") capo: Int,
         @Query("mode") mode: String,
-        @Query("quality") quality: String
+        @Query("quality") quality: String,
+        @Query("startSeconds") startSeconds: Int?,
+        @Query("endSeconds") endSeconds: Int?
     ): CreateJobResponse
 
     @GET("jobs/{jobId}")

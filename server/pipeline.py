@@ -121,6 +121,36 @@ def convert_to_wav(input_path: str, output_path: str, logger) -> None:
     )
 
 
+def trim_wav(
+    input_path: str,
+    output_path: str,
+    start_seconds: float,
+    end_seconds: Optional[float],
+    logger,
+) -> None:
+    args = [
+        SETTINGS.ffmpeg_path,
+        "-y",
+        "-nostdin",
+        "-ss",
+        str(start_seconds),
+    ]
+    if end_seconds is not None:
+        args += ["-to", str(end_seconds)]
+    args += [
+        "-i",
+        input_path,
+        "-ac",
+        "1",
+        "-ar",
+        str(SETTINGS.sample_rate),
+        "-sample_fmt",
+        "s16",
+        output_path,
+    ]
+    run_cmd(args, logger)
+
+
 def download_youtube_audio(url: str, output_dir: str, logger) -> str:
     output_template = os.path.join(output_dir, "youtube.%(ext)s")
     run_cmd(

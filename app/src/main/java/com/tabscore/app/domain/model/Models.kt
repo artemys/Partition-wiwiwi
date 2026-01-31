@@ -20,6 +20,8 @@ data class Transcription(
     val resultTabPath: String?,
     val resultTabJsonPath: String?,
     val resultMidiPath: String?,
+    val startSeconds: Int?,
+    val endSeconds: Int?,
     val errorMessage: String?,
     val durationSeconds: Int?,
     val confidence: Float?,

@@ -30,6 +30,8 @@ data class NewTranscriptionUiState(
     val capo: Int = 0,
     val mode: GuitarMode = GuitarMode.BEST_EFFORT,
     val quality: Quality = Quality.FAST,
+    val startSecondsInput: String = "",
+    val endSecondsInput: String = "",
     val status: TranscriptionStatus = TranscriptionStatus.PENDING,
     val progress: Int = 0,
     val stage: String? = null,
@@ -89,6 +91,14 @@ class NewTranscriptionViewModel @Inject constructor(
         _state.value = _state.value.copy(quality = quality)
     }
 
+    fun setStartSeconds(value: String) {
+        _state.value = _state.value.copy(startSecondsInput = value)
+    }
+
+    fun setEndSeconds(value: String) {
+        _state.value = _state.value.copy(endSecondsInput = value)
+    }
+
     fun startTranscription(title: String, onCreated: (UUID) -> Unit) {
         val current = _state.value
         viewModelScope.launch {
@@ -100,6 +110,8 @@ class NewTranscriptionViewModel @Inject constructor(
                     hasStarted = true,
                     errorMessage = null
                 )
+                val startSeconds = current.startSecondsInput.toIntOrNull()
+                val endSeconds = current.endSecondsInput.toIntOrNull()
                 val id = if (current.sourceType == SourceType.AUDIO_FILE) {
                     val uri = current.audioUri ?: error("Fichier audio manquant")
                     repository.createFromAudio(
@@ -110,7 +122,9 @@ class NewTranscriptionViewModel @Inject constructor(
                         tuning = current.tuning,
                         capo = current.capo,
                         mode = current.mode,
-                        quality = current.quality
+                        quality = current.quality,
+                        startSeconds = startSeconds,
+                        endSeconds = endSeconds
                     )
                 } else {
                     if (!current.youtubeUrl.startsWith("http")) {
@@ -124,7 +138,9 @@ class NewTranscriptionViewModel @Inject constructor(
                         tuning = current.tuning,
                         capo = current.capo,
                         mode = current.mode,
-                        quality = current.quality
+                        quality = current.quality,
+                        startSeconds = startSeconds,
+                        endSeconds = endSeconds
                     )
                 }
                 _state.value = _state.value.copy(

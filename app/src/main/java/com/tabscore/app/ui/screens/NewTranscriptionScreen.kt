@@ -117,6 +117,24 @@ fun NewTranscriptionScreen(
                 )
             }
 
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = state.startSecondsInput,
+                    onValueChange = viewModel::setStartSeconds,
+                    label = { Text(text = "Debut (s)") },
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = state.endSecondsInput,
+                    onValueChange = viewModel::setEndSeconds,
+                    label = { Text(text = "Fin (s)") },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
             HorizontalDivider()
 
             OutlinedTextField(

@@ -94,6 +94,8 @@ async def create_job(
     mode: Optional[str] = Query(None),
     target: str = Query("GUITAR_BEST_EFFORT"),
     inputIsIsolatedGuitar: bool = Query(False),
+    startSeconds: Optional[int] = Query(None),
+    endSeconds: Optional[int] = Query(None),
     audio: UploadFile = File(None),
     body: Optional[YoutubeRequest] = Body(default=None),
     request: Request = None,
@@ -131,6 +133,12 @@ async def create_job(
 
     db = SessionLocal()
     capo = max(0, min(12, capo))
+    if startSeconds is not None and startSeconds < 0:
+        raise HTTPException(status_code=400, detail="startSeconds doit être >= 0.")
+    if endSeconds is not None and endSeconds < 0:
+        raise HTTPException(status_code=400, detail="endSeconds doit être >= 0.")
+    if startSeconds is not None and endSeconds is not None and endSeconds <= startSeconds:
+        raise HTTPException(status_code=400, detail="endSeconds doit être > startSeconds.")
     job = Job(
         id=job_id,
         status="PENDING",
@@ -141,6 +149,8 @@ async def create_job(
         input_filename=audio.filename if audio else None,
         input_path=input_path,
         input_is_isolated=1 if (inputIsIsolatedGuitar or (mode == "isolated_track")) else 0,
+        start_seconds=startSeconds,
+        end_seconds=endSeconds,
         output_type=output_type,
         tuning=tuning.upper(),
         capo=capo,

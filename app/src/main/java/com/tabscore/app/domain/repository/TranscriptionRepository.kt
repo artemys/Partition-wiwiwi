@@ -17,7 +17,9 @@ interface TranscriptionRepository {
         tuning: com.tabscore.app.domain.model.GuitarTuning,
         capo: Int,
         mode: com.tabscore.app.domain.model.GuitarMode,
-        quality: Quality
+        quality: Quality,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): UUID
 
     suspend fun createFromYoutube(
@@ -28,7 +30,9 @@ interface TranscriptionRepository {
         tuning: com.tabscore.app.domain.model.GuitarTuning,
         capo: Int,
         mode: com.tabscore.app.domain.model.GuitarMode,
-        quality: Quality
+        quality: Quality,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): UUID
 
     suspend fun delete(id: UUID)

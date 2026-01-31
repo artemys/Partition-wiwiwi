@@ -19,6 +19,7 @@ from .pipeline import (
     post_process_notes,
     run_basic_pitch,
     run_demucs,
+    trim_wav,
     write_tab_outputs,
 )
 from .utils import ensure_dir, get_job_logger
@@ -97,6 +98,26 @@ def process_job(job_id: str) -> None:
         if duration > SETTINGS.max_duration_seconds:
             raise RuntimeError("Durée audio trop longue (max 12 minutes).")
         _update_job(db, job_id, duration_seconds=duration)
+
+        if job.start_seconds is not None or job.end_seconds is not None:
+            start = float(job.start_seconds or 0)
+            end = float(job.end_seconds) if job.end_seconds is not None else duration
+            if start >= duration:
+                raise RuntimeError("startSeconds dépasse la durée audio.")
+            if end > duration:
+                end = duration
+                warnings.append("Fin tronquée à la durée audio.")
+            segment_duration = end - start
+            if segment_duration <= 0:
+                raise RuntimeError("Segment invalide (endSeconds doit être > startSeconds).")
+            if segment_duration > SETTINGS.max_duration_seconds:
+                raise RuntimeError("Segment audio trop long (max 12 minutes).")
+            trimmed_path = os.path.join(input_dir, "input_trimmed.wav")
+            trim_wav(wav_path, trimmed_path, start, end, logger)
+            wav_path = trimmed_path
+            duration = segment_duration
+            _update_job(db, job_id, duration_seconds=duration)
+            warnings.append("Audio tronqué via timecode.")
 
         candidate_path = wav_path
         if not job.input_is_isolated:

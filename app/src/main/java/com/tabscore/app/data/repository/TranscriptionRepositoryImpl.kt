@@ -52,7 +52,9 @@ class TranscriptionRepositoryImpl(
         tuning: com.tabscore.app.domain.model.GuitarTuning,
         capo: Int,
         mode: com.tabscore.app.domain.model.GuitarMode,
-        quality: Quality
+        quality: Quality,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): UUID = withContext(ioDispatcher) {
         val id = UUID.randomUUID()
         val entity = TranscriptionEntity(
@@ -73,6 +75,8 @@ class TranscriptionRepositoryImpl(
             resultTabPath = null,
             resultTabJsonPath = null,
             resultMidiPath = null,
+            startSeconds = startSeconds,
+            endSeconds = endSeconds,
             errorMessage = null,
             durationSeconds = null,
             confidence = null,
@@ -90,7 +94,9 @@ class TranscriptionRepositoryImpl(
             tuning = tuning.apiValue,
             capo = capo,
             mode = mode.apiValue,
-            quality = quality.name.lowercase()
+            quality = quality.name.lowercase(),
+            startSeconds = startSeconds,
+            endSeconds = endSeconds
         )
         dao.upsert(entity.copy(status = TranscriptionStatus.RUNNING, progress = 5, stage = "PENDING", jobId = response.jobId))
         startPolling(id, response.jobId)
@@ -105,7 +111,9 @@ class TranscriptionRepositoryImpl(
         tuning: com.tabscore.app.domain.model.GuitarTuning,
         capo: Int,
         mode: com.tabscore.app.domain.model.GuitarMode,
-        quality: Quality
+        quality: Quality,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): UUID = withContext(ioDispatcher) {
         val id = UUID.randomUUID()
         val entity = TranscriptionEntity(
@@ -126,6 +134,8 @@ class TranscriptionRepositoryImpl(
             resultTabPath = null,
             resultTabJsonPath = null,
             resultMidiPath = null,
+            startSeconds = startSeconds,
+            endSeconds = endSeconds,
             errorMessage = null,
             durationSeconds = null,
             confidence = null,
@@ -140,7 +150,9 @@ class TranscriptionRepositoryImpl(
             tuning = tuning.apiValue,
             capo = capo,
             mode = mode.apiValue,
-            quality = quality.name.lowercase()
+            quality = quality.name.lowercase(),
+            startSeconds = startSeconds,
+            endSeconds = endSeconds
         )
         dao.upsert(entity.copy(status = TranscriptionStatus.RUNNING, progress = 5, stage = "PENDING", jobId = response.jobId))
         startPolling(id, response.jobId)
@@ -180,7 +192,9 @@ class TranscriptionRepositoryImpl(
                 tuning = entity.tuning.apiValue,
                 capo = entity.capo,
                 mode = entity.mode.apiValue,
-                quality = Quality.ACCURATE.name.lowercase()
+                quality = Quality.ACCURATE.name.lowercase(),
+                startSeconds = entity.startSeconds,
+                endSeconds = entity.endSeconds
             )
         } else {
             remoteApi.createJobFromYoutube(
@@ -191,7 +205,9 @@ class TranscriptionRepositoryImpl(
                 tuning = entity.tuning.apiValue,
                 capo = entity.capo,
                 mode = entity.mode.apiValue,
-                quality = Quality.ACCURATE.name.lowercase()
+                quality = Quality.ACCURATE.name.lowercase(),
+                startSeconds = entity.startSeconds,
+                endSeconds = entity.endSeconds
             )
         }
         dao.upsert(updated.copy(status = TranscriptionStatus.RUNNING, progress = 5, stage = "PENDING", jobId = response.jobId))

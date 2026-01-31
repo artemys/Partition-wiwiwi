@@ -15,7 +15,9 @@ interface TabScoreRemoteApi {
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse
 
     suspend fun createJobFromYoutube(
@@ -26,7 +28,9 @@ interface TabScoreRemoteApi {
         tuning: String,
         capo: Int,
         mode: String,
-        quality: String
+        quality: String,
+        startSeconds: Int?,
+        endSeconds: Int?
     ): CreateJobResponse
 
     suspend fun getJobStatus(jobId: String): JobStatusResponse
