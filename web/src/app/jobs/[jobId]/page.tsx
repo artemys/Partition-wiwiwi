@@ -115,7 +115,7 @@ function PdfPreviewCard({ title, url, preview, onOpen }: PdfPreviewCardProps) {
               title={title}
             />
             <div className="flex justify-end border-t border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
-              <Button variant="ghost" size="sm" onClick={onOpen}>
+              <Button variant="ghost" onClick={onOpen}>
                 Ouvrir dans un nouvel onglet
               </Button>
             </div>

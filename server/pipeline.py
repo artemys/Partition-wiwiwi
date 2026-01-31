@@ -29,7 +29,9 @@ class TabNote:
 
 DEFAULT_DIVISIONS = 4
 DEFAULT_TIME_SIGNATURE = "4/4"
-SCORE_CLEF_SHIFT = 12
+GUITAR_WRITTEN_SHIFT = 12
+LOW_PITCH_THRESHOLD = 55
+HIGH_PITCH_THRESHOLD = 79
 
 
 def parse_tuning(tuning: str, capo: int) -> Tuple[List[int], Optional[str]]:
@@ -413,17 +415,17 @@ def _build_measure_items(
     return items, beam_status
 
 
-def _determine_score_octave_shift(pitches: List[int]) -> int:
-    if not pitches:
-        return 0
-    notated = sorted(p + SCORE_CLEF_SHIFT for p in pitches)
-    median_idx = len(notated) // 2
-    median_value = notated[median_idx]
-    if median_value > 72:
-        return -12
-    if median_value < 48:
-        return 12
-    return 0
+def _determine_written_octave_shift(notes: List[NoteEvent]) -> int:
+    if not notes:
+        return GUITAR_WRITTEN_SHIFT
+    pitches = sorted(note.pitch for note in notes)
+    median_idx = len(pitches) // 2
+    median_value = pitches[median_idx]
+    if median_value > HIGH_PITCH_THRESHOLD:
+        return -GUITAR_WRITTEN_SHIFT
+    if median_value < LOW_PITCH_THRESHOLD:
+        return GUITAR_WRITTEN_SHIFT
+    return GUITAR_WRITTEN_SHIFT
 
 
 def group_chords(notes: List[NoteEvent], threshold: float = 0.03) -> List[List[NoteEvent]]:
@@ -608,10 +610,10 @@ def build_score_json(
 ) -> Tuple[Dict[str, object], int]:
     divisions = DEFAULT_DIVISIONS
     seconds_per_beat = _seconds_per_beat(tempo_bpm)
-    score_shift = _determine_score_octave_shift([note.pitch for note in notes])
+    written_shift = _determine_written_octave_shift(notes)
 
     def serialize(note: NoteEvent) -> Dict[str, int]:
-        notated = int(clamp(note.pitch + SCORE_CLEF_SHIFT + score_shift, 0, 127))
+        notated = int(clamp(note.pitch + written_shift, 0, 127))
         return {"midiPitch": notated}
 
     sorted_notes = sorted(notes, key=lambda note: note.start)
@@ -632,7 +634,7 @@ def build_score_json(
         "timeSignature": DEFAULT_TIME_SIGNATURE,
         "divisions": divisions,
         "quality": quality,
-        "scoreOctaveShift": score_shift,
+        "scoreWrittenOctaveShift": written_shift,
     }
     score_json = {
         "metadata": metadata,
@@ -1077,7 +1079,7 @@ def write_score_musicxml(
     divisions = int(metadata.get("divisions", DEFAULT_DIVISIONS) or DEFAULT_DIVISIONS)
     tempo_bpm = float(metadata.get("tempo") or 0)
     time_sig = metadata.get("timeSignature", DEFAULT_TIME_SIGNATURE)
-    score_shift = int(metadata.get("scoreOctaveShift", 0))
+    written_shift = int(metadata.get("scoreWrittenOctaveShift", GUITAR_WRITTEN_SHIFT))
     try:
         beats, beat_type = [int(part) for part in time_sig.split("/") if part]
     except ValueError:
@@ -1115,7 +1117,7 @@ def write_score_musicxml(
     section_labels = ["A", "B", "C", "D", "E"]
     measures = score_json.get("measures", [])
     measure_count = max(len(measures), 1)
-    transpose_value = -(SCORE_CLEF_SHIFT + score_shift)
+    transpose_value = -written_shift
     score_note_count = sum(len(event["notes"]) for measure in measures for event in measure["events"])
     xml_note_count = 0
 
