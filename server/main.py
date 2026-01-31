@@ -118,10 +118,25 @@ async def create_job(
     quality: str = Query("fast"),
     transcriptionMode: str = Query("best_free"),
     arrangement: str = Query("lead"),
-    confidenceThreshold: float = Query(0.35),
+    confidenceThreshold: float = Query(0.2),
     onsetWindowMs: int = Query(60),
     maxJumpSemitones: int = Query(7),
     gridResolution: str = Query("auto"),
+    onsetDetection: bool = Query(True),
+    onsetAlign: bool = Query(True),
+    onsetGate: bool = Query(False),
+    minNoteDurationMs: int = Query(60),
+    midiMin: int = Query(40),
+    midiMax: int = Query(88),
+    snapToleranceMs: int = Query(35),
+    polyMaxNotes: int = Query(3),
+    tabMaxFret: int = Query(15),
+    tabMaxFretSpanChord: int = Query(5),
+    tabMaxPositionJump: int = Query(4),
+    tabMaxNotesPerChord: int = Query(3),
+    tabMeasuresPerSystem: int = Query(2),
+    tabWrapColumns: int = Query(80),
+    tabTokenWidth: int = Query(3),
     mode: Optional[str] = Query(None),
     target: str = Query("GUITAR_BEST_EFFORT"),
     handSpan: int = Query(4),
@@ -185,6 +200,23 @@ async def create_job(
     onset_window_ms = max(10, min(250, onset_window_ms))
     max_jump = int(maxJumpSemitones)
     max_jump = max(1, min(24, max_jump))
+    onset_detection = bool(onsetDetection)
+    onset_align = bool(onsetAlign)
+    onset_gate = bool(onsetGate)
+    min_note_duration_ms = max(10, min(500, int(minNoteDurationMs)))
+    midi_min = max(0, min(127, int(midiMin)))
+    midi_max = max(0, min(127, int(midiMax)))
+    if midi_max < midi_min:
+        midi_min, midi_max = midi_max, midi_min
+    snap_tolerance_ms = max(0, min(250, int(snapToleranceMs)))
+    poly_max_notes = max(1, min(8, int(polyMaxNotes)))
+    tab_max_fret = max(0, min(24, int(tabMaxFret)))
+    tab_max_span = max(1, min(12, int(tabMaxFretSpanChord)))
+    tab_max_jump = max(0, min(12, int(tabMaxPositionJump)))
+    tab_max_notes_per_chord = max(1, min(6, int(tabMaxNotesPerChord)))
+    tab_measures_per_system = max(1, min(8, int(tabMeasuresPerSystem)))
+    tab_wrap_columns = max(40, min(180, int(tabWrapColumns)))
+    tab_token_width = max(2, min(5, int(tabTokenWidth)))
     if startSeconds is not None and startSeconds < 0:
         raise HTTPException(status_code=400, detail="startSeconds doit être >= 0.")
     if endSeconds is not None and endSeconds < 0:
@@ -219,6 +251,21 @@ async def create_job(
         onset_window_ms=onset_window_ms,
         max_jump_semitones=max_jump,
         grid_resolution=grid_resolution,
+        onset_detection=1 if onset_detection else 0,
+        onset_align=1 if onset_align else 0,
+        onset_gate=1 if onset_gate else 0,
+        note_min_duration_ms=min_note_duration_ms,
+        midi_min=midi_min,
+        midi_max=midi_max,
+        snap_tolerance_ms=snap_tolerance_ms,
+        poly_max_notes=poly_max_notes,
+        tab_max_fret=tab_max_fret,
+        tab_max_fret_span_chord=tab_max_span,
+        tab_max_position_jump=tab_max_jump,
+        tab_max_notes_per_chord=tab_max_notes_per_chord,
+        tab_measures_per_system=tab_measures_per_system,
+        tab_wrap_columns=tab_wrap_columns,
+        tab_token_width=tab_token_width,
     )
     db.add(job)
     db.commit()

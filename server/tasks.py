@@ -172,7 +172,17 @@ def _process_monophonic_transcription(
     tempo_detected = tempo_bpm if tempo_source != "default" else None
     if tempo_source == "default":
         warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-    processed, metrics = post_process_notes(notes_raw, job.quality, tempo_bpm)
+    processed, metrics = post_process_notes(
+        notes_raw,
+        job.quality,
+        tempo_bpm,
+        arrangement=(job.arrangement or "lead"),
+        midi_min=int(getattr(job, "midi_min", 40) or 40),
+        midi_max=int(getattr(job, "midi_max", 88) or 88),
+        min_duration_ms=int(getattr(job, "note_min_duration_ms", 60) or 60),
+        snap_tolerance_ms=int(getattr(job, "snap_tolerance_ms", 35) or 35),
+        poly_max_notes=int(getattr(job, "poly_max_notes", 3) or 3),
+    )
     if not processed:
         raise RuntimeError("Aucune note exploitable après post-traitement.")
     return TranscriptionResult(
@@ -205,7 +215,17 @@ def _process_basic_pitch_transcription(
     tempo_source = "midi" if detected_tempo and detected_tempo > 0 else "default"
     if tempo_source == "default":
         warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-    processed, metrics = post_process_notes(notes, job.quality, tempo_used)
+    processed, metrics = post_process_notes(
+        notes,
+        job.quality,
+        tempo_used,
+        arrangement=(job.arrangement or "lead"),
+        midi_min=int(getattr(job, "midi_min", 40) or 40),
+        midi_max=int(getattr(job, "midi_max", 88) or 88),
+        min_duration_ms=int(getattr(job, "note_min_duration_ms", 60) or 60),
+        snap_tolerance_ms=int(getattr(job, "snap_tolerance_ms", 35) or 35),
+        poly_max_notes=int(getattr(job, "poly_max_notes", 3) or 3),
+    )
     if not processed:
         raise RuntimeError("Aucune note exploitable après post-traitement.")
     return TranscriptionResult(
@@ -228,7 +248,7 @@ def _process_best_free_transcription(
     warnings: List[str],
     output_dir: str,
     *,
-    confidence_threshold: float = 0.35,
+    confidence_threshold: float = 0.2,
     divisions: int = 8,
 ) -> TranscriptionResult:
     """Pipeline recommandé: stem guitare (pré-traité) -> BasicPitch raw -> post-process -> tempo -> quantize."""
@@ -275,7 +295,9 @@ def _process_best_free_transcription(
         },
     )
 
-    onsets = detect_onsets_from_wav(stem_path, sr=SETTINGS.sample_rate, hop_length=512, logger=logger)
+    onsets = []
+    if bool(getattr(job, "onset_detection", 1)):
+        onsets = detect_onsets_from_wav(stem_path, sr=SETTINGS.sample_rate, hop_length=512, logger=logger)
     with open(onsets_json_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -293,11 +315,28 @@ def _process_best_free_transcription(
     cleaned_notes, clean_stats = post_process_basic_pitch_notes(
         raw_notes,
         confidence_threshold=confidence_threshold,
+        midi_min=int(getattr(job, "midi_min", 40) or 40),
+        midi_max=int(getattr(job, "midi_max", 88) or 88),
         lead_mode=lead_mode,
         onsets=onsets,
         onset_window_ms=int(getattr(job, "onset_window_ms", 60) or 60),
         max_jump_semitones=int(getattr(job, "max_jump_semitones", 7) or 7),
+        onset_align=bool(getattr(job, "onset_align", 1)),
+        onset_gate=bool(getattr(job, "onset_gate", 0)),
+        min_duration_seconds=max(0.01, float(getattr(job, "note_min_duration_ms", 60) or 60) / 1000.0),
     )
+    counts = (clean_stats or {}).get("counts") if isinstance(clean_stats, dict) else None
+    if isinstance(counts, dict):
+        logger.info(
+            "best_free notes: raw=%s, afterFilter=%s, afterOnset=%s, afterMerge=%s, afterHarm=%s, afterJump=%s, afterLead=%s",
+            counts.get("raw"),
+            counts.get("afterFilter"),
+            counts.get("afterOnsetGate"),
+            counts.get("afterMerge"),
+            counts.get("afterHarmonics"),
+            counts.get("afterJumpFilter"),
+            counts.get("afterLead"),
+        )
 
     write_json(
         clean_path,
@@ -489,7 +528,7 @@ def process_job(job_id: str) -> None:
                 logger,
                 warnings,
                 output_dir,
-                confidence_threshold=float(getattr(job, "confidence_threshold", 0.35) or 0.35),
+                confidence_threshold=float(getattr(job, "confidence_threshold", 0.2) or 0.2),
                 divisions=8,
             )
             pitch_mode = "best_free"
@@ -578,6 +617,10 @@ def process_job(job_id: str) -> None:
             job.capo,
             hand_span=job.hand_span,
             prefer_low_frets=bool(job.prefer_low_frets),
+            max_fret=int(getattr(job, "tab_max_fret", 15) or 15),
+            max_fret_span_chord=int(getattr(job, "tab_max_fret_span_chord", 5) or 5),
+            max_position_jump=int(getattr(job, "tab_max_position_jump", 4) or 4),
+            max_notes_per_chord=int(getattr(job, "tab_max_notes_per_chord", 3) or 3),
         )
         fingering_debug_path = os.path.join(output_dir, "fingering_debug.json")
         write_json(fingering_debug_path, playability_debug)
@@ -597,6 +640,9 @@ def process_job(job_id: str) -> None:
             tab_json_path=tab_json_path,
             logger=logger,
             divisions=divisions,
+            measures_per_system=int(getattr(job, "tab_measures_per_system", 2) or 2),
+            wrap_columns=int(getattr(job, "tab_wrap_columns", 80) or 80),
+            token_width=int(getattr(job, "tab_token_width", 3) or 3),
         )
         warnings.extend(tab_warnings)
 

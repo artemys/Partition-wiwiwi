@@ -88,9 +88,9 @@ def test_post_process_notes_quantizes_to_tempo_grid():
     grid = (60.0 / 120.0) / 4.0
     for note in processed:
         normalized_start = note.start / grid
-        normalized_duration = note.duration / grid
         assert abs(normalized_start - round(normalized_start)) < 1e-6
-        assert abs(normalized_duration - round(normalized_duration)) < 1e-6
+        # La durée n'est plus snapée agressivement: on conserve au maximum l'enveloppe originale.
+        assert note.duration >= 0.06
 
 
 def test_post_process_notes_merges_close_segments_and_drops_too_short():

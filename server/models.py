@@ -41,6 +41,27 @@ class Job(Base):
     max_jump_semitones = Column(Integer, nullable=False, default=7)
     grid_resolution = Column(String, nullable=False, default="auto")  # auto|eighth|sixteenth
 
+    # Paramètres pipeline (best_free + post-process) - stockés en DB pour le worker.
+    onset_detection = Column(Integer, nullable=False, default=1)
+    onset_align = Column(Integer, nullable=False, default=1)
+    onset_gate = Column(Integer, nullable=False, default=0)
+    note_min_duration_ms = Column(Integer, nullable=False, default=60)
+    midi_min = Column(Integer, nullable=False, default=40)
+    midi_max = Column(Integer, nullable=False, default=88)
+    snap_tolerance_ms = Column(Integer, nullable=False, default=35)
+    poly_max_notes = Column(Integer, nullable=False, default=3)
+
+    # Mapping TAB (jouabilité).
+    tab_max_fret = Column(Integer, nullable=False, default=15)
+    tab_max_fret_span_chord = Column(Integer, nullable=False, default=5)
+    tab_max_position_jump = Column(Integer, nullable=False, default=4)
+    tab_max_notes_per_chord = Column(Integer, nullable=False, default=3)
+
+    # Rendu TAB texte.
+    tab_measures_per_system = Column(Integer, nullable=False, default=2)
+    tab_wrap_columns = Column(Integer, nullable=False, default=80)
+    tab_token_width = Column(Integer, nullable=False, default=3)
+
     duration_seconds = Column(Float, nullable=True)
     tempo_bpm = Column(Float, nullable=True)
 

@@ -11,12 +11,14 @@ from server.pipeline import (
 def test_post_process_notes_respects_tempo_grid():
     note_events = [NoteEvent(start=0.14, duration=0.2, pitch=64, velocity=80)]
 
-    quantified_slow, _ = post_process_notes(note_events, "fast", 60)
+    quantified_fast_tempo, _ = post_process_notes(note_events, "fast", 240)
     quantified_default, _ = post_process_notes(note_events, "fast", None)
 
-    assert quantified_slow and quantified_default
-    assert quantified_slow[0].start == 0.0
-    assert quantified_default[0].start > quantified_slow[0].start
+    assert quantified_fast_tempo and quantified_default
+    # À tempo élevé, la grille est plus fine -> le start peut snapper dans la tolérance.
+    assert abs(quantified_fast_tempo[0].start - 0.125) < 1e-6
+    # À tempo par défaut (120), la grille est plus large -> on conserve l'onset (pas de snap destructif).
+    assert abs(quantified_default[0].start - 0.14) < 1e-6
 
 
 def test_score_written_octave_shift_applies_thresholds():

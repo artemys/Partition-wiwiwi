@@ -50,6 +50,21 @@ export async function createJob(params: {
   onsetWindowMs?: number;
   maxJumpSemitones?: number;
   gridResolution?: "auto" | "eighth" | "sixteenth";
+  onsetDetection?: boolean;
+  onsetAlign?: boolean;
+  onsetGate?: boolean;
+  minNoteDurationMs?: number;
+  midiMin?: number;
+  midiMax?: number;
+  snapToleranceMs?: number;
+  polyMaxNotes?: number;
+  tabMaxFret?: number;
+  tabMaxFretSpanChord?: number;
+  tabMaxPositionJump?: number;
+  tabMaxNotesPerChord?: number;
+  tabMeasuresPerSystem?: number;
+  tabWrapColumns?: number;
+  tabTokenWidth?: number;
   audioFile?: File | null;
   youtubeUrl?: string | null;
   startSeconds?: number;
@@ -79,6 +94,51 @@ export async function createJob(params: {
   }
   if (params.gridResolution) {
     query.set("gridResolution", params.gridResolution);
+  }
+  if (params.onsetDetection === false) {
+    query.set("onsetDetection", "false");
+  }
+  if (params.onsetAlign === false) {
+    query.set("onsetAlign", "false");
+  }
+  if (params.onsetGate) {
+    query.set("onsetGate", "true");
+  }
+  if (Number.isFinite(params.minNoteDurationMs ?? NaN)) {
+    query.set("minNoteDurationMs", String(params.minNoteDurationMs));
+  }
+  if (Number.isFinite(params.midiMin ?? NaN)) {
+    query.set("midiMin", String(params.midiMin));
+  }
+  if (Number.isFinite(params.midiMax ?? NaN)) {
+    query.set("midiMax", String(params.midiMax));
+  }
+  if (Number.isFinite(params.snapToleranceMs ?? NaN)) {
+    query.set("snapToleranceMs", String(params.snapToleranceMs));
+  }
+  if (Number.isFinite(params.polyMaxNotes ?? NaN)) {
+    query.set("polyMaxNotes", String(params.polyMaxNotes));
+  }
+  if (Number.isFinite(params.tabMaxFret ?? NaN)) {
+    query.set("tabMaxFret", String(params.tabMaxFret));
+  }
+  if (Number.isFinite(params.tabMaxFretSpanChord ?? NaN)) {
+    query.set("tabMaxFretSpanChord", String(params.tabMaxFretSpanChord));
+  }
+  if (Number.isFinite(params.tabMaxPositionJump ?? NaN)) {
+    query.set("tabMaxPositionJump", String(params.tabMaxPositionJump));
+  }
+  if (Number.isFinite(params.tabMaxNotesPerChord ?? NaN)) {
+    query.set("tabMaxNotesPerChord", String(params.tabMaxNotesPerChord));
+  }
+  if (Number.isFinite(params.tabMeasuresPerSystem ?? NaN)) {
+    query.set("tabMeasuresPerSystem", String(params.tabMeasuresPerSystem));
+  }
+  if (Number.isFinite(params.tabWrapColumns ?? NaN)) {
+    query.set("tabWrapColumns", String(params.tabWrapColumns));
+  }
+  if (Number.isFinite(params.tabTokenWidth ?? NaN)) {
+    query.set("tabTokenWidth", String(params.tabTokenWidth));
   }
   if (Number.isFinite(params.handSpan ?? NaN)) {
     query.set("handSpan", String(params.handSpan));

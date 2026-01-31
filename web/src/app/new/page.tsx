@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -35,6 +36,21 @@ const formSchema = z
     onsetWindowMs: z.number().int().min(10).max(250),
     maxJumpSemitones: z.number().int().min(1).max(24),
     gridResolution: z.enum(["auto", "eighth", "sixteenth"]),
+    onsetDetection: z.boolean(),
+    onsetAlign: z.boolean(),
+    onsetGate: z.boolean(),
+    minNoteDurationMs: z.number().int().min(10).max(500),
+    midiMin: z.number().int().min(0).max(127),
+    midiMax: z.number().int().min(0).max(127),
+    snapToleranceMs: z.number().int().min(0).max(250),
+    polyMaxNotes: z.number().int().min(1).max(8),
+    tabMaxFret: z.number().int().min(0).max(24),
+    tabMaxFretSpanChord: z.number().int().min(1).max(12),
+    tabMaxPositionJump: z.number().int().min(0).max(12),
+    tabMaxNotesPerChord: z.number().int().min(1).max(6),
+    tabMeasuresPerSystem: z.number().int().min(1).max(8),
+    tabWrapColumns: z.number().int().min(40).max(180),
+    tabTokenWidth: z.number().int().min(2).max(5),
     startSeconds: z.number().int().min(0).max(12 * 60).optional(),
     endSeconds: z.number().int().min(0).max(12 * 60).optional(),
   })
@@ -89,10 +105,25 @@ export default function NewTranscriptionPage() {
       quality: "fast",
       transcriptionMode: "best_free",
       arrangement: "lead",
-      confidenceThreshold: 0.35,
+      confidenceThreshold: 0.2,
       onsetWindowMs: 60,
       maxJumpSemitones: 7,
       gridResolution: "auto",
+      onsetDetection: true,
+      onsetAlign: true,
+      onsetGate: false,
+      minNoteDurationMs: 60,
+      midiMin: 40,
+      midiMax: 88,
+      snapToleranceMs: 35,
+      polyMaxNotes: 3,
+      tabMaxFret: 15,
+      tabMaxFretSpanChord: 5,
+      tabMaxPositionJump: 4,
+      tabMaxNotesPerChord: 3,
+      tabMeasuresPerSystem: 2,
+      tabWrapColumns: 80,
+      tabTokenWidth: 3,
       youtubeUrl: "",
       audioFile: null,
       startSeconds: undefined,
@@ -118,6 +149,21 @@ export default function NewTranscriptionPage() {
         onsetWindowMs: values.onsetWindowMs,
         maxJumpSemitones: values.maxJumpSemitones,
         gridResolution: values.gridResolution,
+        onsetDetection: values.onsetDetection,
+        onsetAlign: values.onsetAlign,
+        onsetGate: values.onsetGate,
+        minNoteDurationMs: values.minNoteDurationMs,
+        midiMin: values.midiMin,
+        midiMax: values.midiMax,
+        snapToleranceMs: values.snapToleranceMs,
+        polyMaxNotes: values.polyMaxNotes,
+        tabMaxFret: values.tabMaxFret,
+        tabMaxFretSpanChord: values.tabMaxFretSpanChord,
+        tabMaxPositionJump: values.tabMaxPositionJump,
+        tabMaxNotesPerChord: values.tabMaxNotesPerChord,
+        tabMeasuresPerSystem: values.tabMeasuresPerSystem,
+        tabWrapColumns: values.tabWrapColumns,
+        tabTokenWidth: values.tabTokenWidth,
         handSpan: playabilitySpan,
         preferLowFrets,
         audioFile: values.audioFile,
@@ -270,6 +316,21 @@ export default function NewTranscriptionPage() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="minNoteDurationMs">Durée min note (ms)</Label>
+                  <Input
+                    id="minNoteDurationMs"
+                    type="number"
+                    min={10}
+                    max={500}
+                    step={1}
+                    {...register("minNoteDurationMs", { valueAsNumber: true })}
+                  />
+                  {errors.minNoteDurationMs && (
+                    <p className="text-xs text-red-600 dark:text-red-300">{errors.minNoteDurationMs.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="onsetWindowMs">Fenêtre onset (ms)</Label>
                   <Input
                     id="onsetWindowMs"
@@ -281,6 +342,21 @@ export default function NewTranscriptionPage() {
                   />
                   {errors.onsetWindowMs && (
                     <p className="text-xs text-red-600 dark:text-red-300">{errors.onsetWindowMs.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="snapToleranceMs">Tolérance snap (ms)</Label>
+                  <Input
+                    id="snapToleranceMs"
+                    type="number"
+                    min={0}
+                    max={250}
+                    step={1}
+                    {...register("snapToleranceMs", { valueAsNumber: true })}
+                  />
+                  {errors.snapToleranceMs && (
+                    <p className="text-xs text-red-600 dark:text-red-300">{errors.snapToleranceMs.message}</p>
                   )}
                 </div>
 
@@ -299,6 +375,160 @@ export default function NewTranscriptionPage() {
                       {errors.maxJumpSemitones.message}
                     </p>
                   )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="polyMaxNotes">Poly: max notes simultanées</Label>
+                  <Input
+                    id="polyMaxNotes"
+                    type="number"
+                    min={1}
+                    max={8}
+                    step={1}
+                    {...register("polyMaxNotes", { valueAsNumber: true })}
+                  />
+                  {errors.polyMaxNotes && (
+                    <p className="text-xs text-red-600 dark:text-red-300">{errors.polyMaxNotes.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Onsets (best_free)</Label>
+                  <div className="space-y-2 rounded-xl border border-zinc-200 bg-white/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/60">
+                    <Checkbox {...register("onsetDetection")}>Détection d’onsets</Checkbox>
+                    <Checkbox {...register("onsetAlign")}>Aligner start sur onsets (snap)</Checkbox>
+                    <Checkbox {...register("onsetGate")}>Gate strict (supprime hors onsets)</Checkbox>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="midiMin">Plage MIDI min/max</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      id="midiMin"
+                      type="number"
+                      min={0}
+                      max={127}
+                      step={1}
+                      {...register("midiMin", { valueAsNumber: true })}
+                    />
+                    <Input
+                      id="midiMax"
+                      type="number"
+                      min={0}
+                      max={127}
+                      step={1}
+                      {...register("midiMax", { valueAsNumber: true })}
+                    />
+                  </div>
+                  {(errors.midiMin || errors.midiMax) && (
+                    <p className="text-xs text-red-600 dark:text-red-300">
+                      {errors.midiMin?.message || errors.midiMax?.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Contraintes de doigté (TAB)</Label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="tabMaxFret" className="text-xs">
+                        Frette max
+                      </Label>
+                      <Input
+                        id="tabMaxFret"
+                        type="number"
+                        min={0}
+                        max={24}
+                        step={1}
+                        {...register("tabMaxFret", { valueAsNumber: true })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="tabMaxFretSpanChord" className="text-xs">
+                        Écart max (accord)
+                      </Label>
+                      <Input
+                        id="tabMaxFretSpanChord"
+                        type="number"
+                        min={1}
+                        max={12}
+                        step={1}
+                        {...register("tabMaxFretSpanChord", { valueAsNumber: true })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="tabMaxPositionJump" className="text-xs">
+                        Saut position (frettes)
+                      </Label>
+                      <Input
+                        id="tabMaxPositionJump"
+                        type="number"
+                        min={0}
+                        max={12}
+                        step={1}
+                        {...register("tabMaxPositionJump", { valueAsNumber: true })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="tabMaxNotesPerChord" className="text-xs">
+                        Notes max/accord
+                      </Label>
+                      <Input
+                        id="tabMaxNotesPerChord"
+                        type="number"
+                        min={1}
+                        max={6}
+                        step={1}
+                        {...register("tabMaxNotesPerChord", { valueAsNumber: true })}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Rendu TAB texte</Label>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="tabWrapColumns" className="text-xs">
+                        Wrap colonnes
+                      </Label>
+                      <Input
+                        id="tabWrapColumns"
+                        type="number"
+                        min={40}
+                        max={180}
+                        step={1}
+                        {...register("tabWrapColumns", { valueAsNumber: true })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="tabTokenWidth" className="text-xs">
+                        Largeur token
+                      </Label>
+                      <Input
+                        id="tabTokenWidth"
+                        type="number"
+                        min={2}
+                        max={5}
+                        step={1}
+                        {...register("tabTokenWidth", { valueAsNumber: true })}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="tabMeasuresPerSystem" className="text-xs">
+                        Mesures/ligne
+                      </Label>
+                      <Input
+                        id="tabMeasuresPerSystem"
+                        type="number"
+                        min={1}
+                        max={8}
+                        step={1}
+                        {...register("tabMeasuresPerSystem", { valueAsNumber: true })}
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="rounded-xl border border-zinc-200 bg-white/60 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-300">

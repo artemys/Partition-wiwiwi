@@ -2,9 +2,7 @@ from typing import List
 
 from server.pipeline import (
     NoteEvent,
-    assign_chord,
     map_notes_to_tab,
-    parse_tuning,
 )
 
 
@@ -43,11 +41,19 @@ def test_chord_span_stays_within_hand():
         _make_note(71),
         _make_note(76),
     ]
-    open_strings, _ = parse_tuning("EADGBE", 0)
-    assignment, _, _ = assign_chord(notes, open_strings, {}, hand_span=4)
-    assert assignment, "L'accord devrait être assignable."
-    frets = [assignment[idx][1] for idx in range(len(notes))]
-    assert max(frets) - min(frets) <= 4, "La span des accords doit rester dans la main normale."
+    tab_notes, _, _ = map_notes_to_tab(
+        notes,
+        "EADGBE",
+        0,
+        hand_span=4,
+        max_fret=15,
+        max_fret_span_chord=5,
+        max_position_jump=4,
+        max_notes_per_chord=4,
+    )
+    assert tab_notes, "L'accord devrait être mappable."
+    frets = [n.fret for n in tab_notes]
+    assert max(frets) - min(frets) <= 5, "La span des accords doit respecter max_fret_span_chord."
 
 
 def test_fingering_debug_exports_candidates_and_handpos():
@@ -61,4 +67,4 @@ def test_fingering_debug_exports_candidates_and_handpos():
     for event in events:
         assert "handPosBefore" in event
         assert "handPosAfter" in event
-        assert isinstance(event.get("candidates"), list), "Chaque événement doit lister les candidats."
+        assert isinstance(event.get("candidatesTop"), list), "Chaque événement doit lister des candidats (top)."
