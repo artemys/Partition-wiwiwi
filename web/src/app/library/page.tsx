@@ -38,7 +38,16 @@ export default function LibraryPage() {
     try {
       const result = await getJobResult(jobId);
       const url =
-        result.pdfUrl || result.musicXmlUrl || result.tabTxtUrl || result.tabJsonUrl || result.midiUrl;
+        result.scorePdfUrl ??
+        result.tabPdfUrl ??
+        result.pdfUrl ??
+        result.scoreMusicXmlUrl ??
+        result.tabMusicXmlUrl ??
+        result.musicXmlUrl ??
+        result.scoreJsonUrl ??
+        result.tabJsonUrl ??
+        result.tabTxtUrl ??
+        result.midiUrl;
       if (!url) {
         toast.error("Aucun fichier disponible pour ce job.");
         return;

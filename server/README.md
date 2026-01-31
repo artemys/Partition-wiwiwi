@@ -51,14 +51,14 @@ export TEST_AUDIO_FILE="/chemin/vers/audio.mp3"
 3. Isolation Demucs (sauf piste isolée).
 4. Basic Pitch → MIDI.
 5. Post-traitement notes + tablature.
-6. Export tab.txt / tab.json / MIDI / MusicXML (result.musicxml) / PDF (result.pdf).
+6. Export canonical `score.json` + `tab.txt`, `tab.json`, `output.mid`, `result_tab.musicxml`, `result_tab.pdf`, `result_score.musicxml`, `result_score.pdf`.
 
 ## Stockage
 
 Fichiers dans `server/data/{jobId}/` :
 
 - `input/` : fichiers bruts + wav
-- `output/` : `tab.txt`, `tab.json`, `output.mid`, `result.musicxml`, `result.pdf`
+- `output/` : `tab.txt`, `tab.json`, `score.json`, `output.mid`, `result_tab.musicxml`, `result_tab.pdf`, `result_score.musicxml`, `result_score.pdf`
 - `logs.txt` : logs détaillés par job
 
 ## Erreurs
@@ -68,5 +68,10 @@ En cas de problème : `status=FAILED` + `errorMessage` clair + logs.
 
 ## Résultat PDF
 
-`GET /jobs/{jobId}/result` retourne `pdfUrl` (obligatoire) et `musicXmlUrl` (optionnel).
-Le fichier PDF est disponible via `/files/{jobId}/result.pdf`.
+`GET /jobs/{jobId}/result` retourne désormais :
+
+- `tabPdfUrl`, `tabMusicXmlUrl` (tablature)
+- `scorePdfUrl`, `scoreMusicXmlUrl`, `scoreJsonUrl` (partition)
+- `pdfUrl`, `musicXmlUrl` (compatibilité)
+
+Les PDF sont disponibles via `/files/{jobId}/result_tab.pdf` et `/files/{jobId}/result_score.pdf`.

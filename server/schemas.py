@@ -28,6 +28,11 @@ class JobMetadata(BaseModel):
 class JobResultResponse(BaseModel):
     tabTxtUrl: Optional[str] = None
     tabJsonUrl: Optional[str] = None
+    tabMusicXmlUrl: Optional[str] = None
+    tabPdfUrl: Optional[str] = None
+    scoreJsonUrl: Optional[str] = None
+    scoreMusicXmlUrl: Optional[str] = None
+    scorePdfUrl: Optional[str] = None
     musicXmlUrl: Optional[str] = None
     pdfUrl: Optional[str] = None
     midiUrl: Optional[str] = None

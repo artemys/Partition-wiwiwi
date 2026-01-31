@@ -18,15 +18,131 @@ type PdfFetchInfo = {
   contentLength: number | null;
 };
 
+type PdfPreviewState = {
+  objectUrl: string | null;
+  fetchInfo: PdfFetchInfo | null;
+  error: string | null;
+};
+
+function usePdfPreview(url?: string | null): PdfPreviewState {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [fetchInfo, setFetchInfo] = useState<PdfFetchInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!url) {
+      setObjectUrl(null);
+      setFetchInfo(null);
+      setError(null);
+      return;
+    }
+    let objectUrlRef: string | null = null;
+    const controller = new AbortController();
+    setObjectUrl(null);
+    setFetchInfo(null);
+    setError(null);
+
+    const loadPdf = async () => {
+      try {
+        const response = await fetch(url, { signal: controller.signal });
+        const contentType = response.headers.get("content-type");
+        const contentLengthHeader = response.headers.get("content-length");
+        const parsedLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+        const info: PdfFetchInfo = {
+          status: response.status,
+          contentType,
+          contentLength:
+            parsedLength !== null && !Number.isNaN(parsedLength) ? parsedLength : null,
+        };
+        if (controller.signal.aborted) {
+          return;
+        }
+        setFetchInfo(info);
+        if (!response.ok) {
+          throw new Error(`Réponse HTTP ${response.status}`);
+        }
+        if ((contentType ?? "").split(";")[0] !== "application/pdf") {
+          throw new Error("Ressource reçue n'est pas un PDF.");
+        }
+        const blob = await response.blob();
+        if (controller.signal.aborted) {
+          return;
+        }
+        objectUrlRef = URL.createObjectURL(blob);
+        setObjectUrl(objectUrlRef);
+        setError(null);
+      } catch (err) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message = err instanceof Error && err.message ? err.message : "Impossible de charger le PDF.";
+        setError(message);
+        setObjectUrl(null);
+      }
+    };
+
+    void loadPdf();
+
+    return () => {
+      controller.abort();
+      if (objectUrlRef) {
+        URL.revokeObjectURL(objectUrlRef);
+      }
+    };
+  }, [url]);
+
+  return { objectUrl, fetchInfo, error };
+}
+
+type PdfPreviewCardProps = {
+  title: string;
+  url?: string | null;
+  preview: PdfPreviewState;
+  onOpen: () => void;
+};
+
+function PdfPreviewCard({ title, url, preview, onOpen }: PdfPreviewCardProps) {
+  return (
+    <Card className="space-y-3">
+      <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{title}</h2>
+      {url ? (
+        preview.objectUrl ? (
+          <div className="relative overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+            <embed
+              src={preview.objectUrl}
+              type="application/pdf"
+              className="h-[520px] w-full"
+              title={title}
+            />
+            <div className="flex justify-end border-t border-zinc-200 px-3 py-2 text-xs dark:border-zinc-800">
+              <Button variant="ghost" size="sm" onClick={onOpen}>
+                Ouvrir dans un nouvel onglet
+              </Button>
+            </div>
+          </div>
+        ) : preview.error ? (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-zinc-200 p-6 text-sm text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
+            <p>{preview.error}</p>
+            <Button variant="ghost" onClick={onOpen}>
+              Ouvrir dans un nouvel onglet
+            </Button>
+          </div>
+        ) : (
+          <p className="p-6 text-sm text-zinc-500 dark:text-zinc-400">Chargement du PDF…</p>
+        )
+      ) : (
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucun PDF disponible.</p>
+      )}
+    </Card>
+  );
+}
+
 export default function JobDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const jobId = Array.isArray(params.jobId) ? params.jobId[0] : params.jobId;
   const resolvedJobId = typeof jobId === "string" ? jobId : "";
   const [tabPreview, setTabPreview] = useState<string | null>(null);
-  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
-  const [pdfFetchInfo, setPdfFetchInfo] = useState<PdfFetchInfo | null>(null);
-  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const {
     data: status,
@@ -48,6 +164,8 @@ export default function JobDetailsPage() {
     queryFn: () => getJobResult(resolvedJobId),
     enabled: status?.status === "DONE" && Boolean(resolvedJobId),
   });
+  const tabPdfPreview = usePdfPreview(result?.tabPdfUrl ?? null);
+  const scorePdfPreview = usePdfPreview(result?.scorePdfUrl ?? null);
 
   const {
     data: debugInfo,
@@ -74,29 +192,52 @@ export default function JobDetailsPage() {
   const downloadUrl = useMemo(() => {
     if (!result) return null;
     const preference = getPreferredExportFormat();
-    if (preference === "pdf" && result.pdfUrl) return result.pdfUrl;
-    if (preference === "musicxml" && result.musicXmlUrl) return result.musicXmlUrl;
-    if (preference === "tab" && result.tabTxtUrl) return result.tabTxtUrl;
-    if (preference === "midi" && result.midiUrl) return result.midiUrl;
-    return result.pdfUrl || result.musicXmlUrl || result.tabTxtUrl || result.tabJsonUrl || result.midiUrl || null;
+    if (preference === "pdf") {
+      return result.scorePdfUrl ?? result.tabPdfUrl ?? result.pdfUrl ?? null;
+    }
+    if (preference === "musicxml") {
+      return (
+        result.scoreMusicXmlUrl ??
+        result.tabMusicXmlUrl ??
+        result.musicXmlUrl ??
+        null
+      );
+    }
+    if (preference === "tab") {
+      return result.tabTxtUrl ?? result.tabJsonUrl ?? null;
+    }
+    if (preference === "midi") {
+      return result.midiUrl ?? null;
+    }
+    return (
+      result.scorePdfUrl ??
+      result.tabPdfUrl ??
+      result.pdfUrl ??
+      result.scoreMusicXmlUrl ??
+      result.tabMusicXmlUrl ??
+      result.musicXmlUrl ??
+      result.tabTxtUrl ??
+      result.tabJsonUrl ??
+      result.midiUrl ??
+      null
+    );
   }, [result]);
 
-  const pdfUrl = result?.pdfUrl ?? null;
-
-  const handleOpenPdf = () => {
-    if (!pdfUrl) {
+  const openPdf = (url?: string | null, info?: PdfFetchInfo | null) => {
+    if (!url) {
       return;
     }
-    if (pdfFetchInfo?.status === 404) {
+    if (info?.status === 404) {
       toast.error("PDF introuvable (404).");
-    } else if (pdfFetchInfo && (pdfFetchInfo.contentType ?? "").split(";")[0] !== "application/pdf") {
+    } else if (info && (info.contentType ?? "").split(";")[0] !== "application/pdf") {
       toast.error("La ressource n'est pas un PDF.");
     }
-    window.open(pdfUrl, "_blank", "noopener,noreferrer");
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const formatBytes = (value?: number | null) =>
     value != null ? `${value.toLocaleString("fr-FR")} octets` : "—";
+  const formatCount = (value?: number | null) => (value != null ? value.toString() : "—");
 
   useEffect(() => {
     const tabUrl = result?.tabTxtUrl;
@@ -121,68 +262,6 @@ export default function JobDetailsPage() {
       cancelled = true;
     };
   }, [result?.tabTxtUrl]);
-
-  useEffect(() => {
-    if (!pdfUrl) {
-      setPdfObjectUrl(null);
-      setPdfFetchInfo(null);
-      setPdfError(null);
-      return;
-    }
-    let objectUrl: string | null = null;
-    const controller = new AbortController();
-    setPdfObjectUrl(null);
-    setPdfFetchInfo(null);
-    setPdfError(null);
-
-    const loadPdf = async () => {
-      try {
-        const response = await fetch(pdfUrl, { signal: controller.signal });
-        const contentType = response.headers.get("content-type");
-        const contentLengthHeader = response.headers.get("content-length");
-        const parsedLength = contentLengthHeader ? Number(contentLengthHeader) : null;
-        const contentLength = parsedLength !== null && !Number.isNaN(parsedLength) ? parsedLength : null;
-        const info: PdfFetchInfo = {
-          status: response.status,
-          contentType,
-          contentLength,
-        };
-        if (controller.signal.aborted) {
-          return;
-        }
-        setPdfFetchInfo(info);
-        if (!response.ok) {
-          throw new Error(`Réponse HTTP ${response.status}`);
-        }
-        if ((contentType ?? "").split(";")[0] !== "application/pdf") {
-          throw new Error("Ressource reçue n'est pas un PDF.");
-        }
-        const blob = await response.blob();
-        if (controller.signal.aborted) {
-          return;
-        }
-        objectUrl = URL.createObjectURL(blob);
-        setPdfObjectUrl(objectUrl);
-        setPdfError(null);
-      } catch (err) {
-        if (controller.signal.aborted) {
-          return;
-        }
-        const message = err instanceof Error && err.message ? err.message : "Impossible de charger le PDF.";
-        setPdfError(message);
-        setPdfObjectUrl(null);
-      }
-    };
-
-    void loadPdf();
-
-    return () => {
-      controller.abort();
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [pdfUrl]);
 
   if (!resolvedJobId) {
     return <Card>Job introuvable.</Card>;
@@ -270,9 +349,20 @@ export default function JobDetailsPage() {
                 Ouvrir TAB
               </Button>
             )}
-            {result?.pdfUrl && (
-              <Button variant="secondary" onClick={handleOpenPdf}>
-                Ouvrir PDF
+            {result?.tabPdfUrl && (
+              <Button
+                variant="secondary"
+                onClick={() => openPdf(result.tabPdfUrl, tabPdfPreview.fetchInfo)}
+              >
+                Ouvrir PDF TAB
+              </Button>
+            )}
+            {result?.scorePdfUrl && (
+              <Button
+                variant="secondary"
+                onClick={() => openPdf(result.scorePdfUrl, scorePdfPreview.fetchInfo)}
+              >
+                Ouvrir PDF Partition
               </Button>
             )}
           </div>
@@ -281,7 +371,7 @@ export default function JobDetailsPage() {
 
       {status.status === "DONE" && (
         <>
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-4">
             <Card className="space-y-3">
               <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation TAB</h2>
               {result?.tabTxtUrl ? (
@@ -292,54 +382,71 @@ export default function JobDetailsPage() {
                 <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucune tablature disponible.</p>
               )}
             </Card>
-            <Card className="space-y-3">
-              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation PDF</h2>
-              {result?.pdfUrl ? (
-                <div className="min-h-[520px] overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
-                  {pdfObjectUrl ? (
-                    <embed
-                      src={pdfObjectUrl}
-                      type="application/pdf"
-                      className="h-[520px] w-full"
-                      title="Prévisualisation PDF"
-                    />
-                  ) : pdfError ? (
-                    <div className="flex flex-col items-center justify-center gap-3 p-6 text-sm text-zinc-600 dark:text-zinc-400">
-                      <p>{pdfError}</p>
-                      <Button variant="ghost" onClick={handleOpenPdf}>
-                        Ouvrir dans un nouvel onglet
-                      </Button>
-                    </div>
-                  ) : (
-                    <p className="p-6 text-sm text-zinc-500 dark:text-zinc-400">Chargement du PDF…</p>
-                  )}
-                </div>
-              ) : (
-                <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucun PDF disponible.</p>
-              )}
-            </Card>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <PdfPreviewCard
+                title="PDF TAB"
+                url={result?.tabPdfUrl ?? null}
+                preview={tabPdfPreview}
+                onOpen={() => openPdf(result?.tabPdfUrl, tabPdfPreview.fetchInfo)}
+              />
+              <PdfPreviewCard
+                title="PDF Partition"
+                url={result?.scorePdfUrl ?? null}
+                preview={scorePdfPreview}
+                onOpen={() => openPdf(result?.scorePdfUrl, scorePdfPreview.fetchInfo)}
+              />
+            </div>
           </div>
           <Card className="space-y-3">
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Info debug</h2>
             <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
-              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">Ressource PDF</p>
+              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF TAB</p>
               <div className="flex justify-between">
-                <span>pdfUrl</span>
+                <span>URL</span>
                 <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
-                  {result?.pdfUrl ?? "—"}
+                  {result?.tabPdfUrl ?? "—"}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span>Status HTTP</span>
-                <span>{pdfFetchInfo?.status ?? "—"}</span>
+                <span>{tabPdfPreview.fetchInfo?.status ?? "—"}</span>
               </div>
               <div className="flex justify-between">
                 <span>Content-Type</span>
-                <span>{pdfFetchInfo?.contentType ?? "—"}</span>
+                <span>{tabPdfPreview.fetchInfo?.contentType ?? "—"}</span>
               </div>
               <div className="flex justify-between">
                 <span>Content-Length</span>
-                <span>{formatBytes(pdfFetchInfo?.contentLength)}</span>
+                <span>{formatBytes(tabPdfPreview.fetchInfo?.contentLength)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Erreur</span>
+                <span>{tabPdfPreview.error ?? "—"}</span>
+              </div>
+            </div>
+            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
+              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF PARTITION</p>
+              <div className="flex justify-between">
+                <span>URL</span>
+                <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
+                  {result?.scorePdfUrl ?? "—"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Status HTTP</span>
+                <span>{scorePdfPreview.fetchInfo?.status ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Content-Type</span>
+                <span>{scorePdfPreview.fetchInfo?.contentType ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Content-Length</span>
+                <span>{formatBytes(scorePdfPreview.fetchInfo?.contentLength)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Erreur</span>
+                <span>{scorePdfPreview.error ?? "—"}</span>
               </div>
             </div>
             <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
@@ -374,6 +481,34 @@ export default function JobDetailsPage() {
                         <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
                           stderr: {debugInfo.lastMuseScore.stderr}
                         </p>
+                      )}
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Statistiques</p>
+                    <p className="text-xs">
+                      Notes tab.json : <span className="font-mono">{formatCount(debugInfo.totalNotesTabJson)}</span>
+                    </p>
+                    <p className="text-xs">
+                      Notes MusicXML :{" "}
+                      <span className="font-mono">{formatCount(debugInfo.totalNotesMusicXML)}</span>
+                    </p>
+                    <p className="text-xs">
+                      Notes TAB : <span className="font-mono">{formatCount(debugInfo.totalNotesTabTxt)}</span>
+                    </p>
+                  </div>
+                  {debugInfo.diffReport && debugInfo.diffReport.length > 0 && (
+                    <div className="space-y-1 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
+                      <p className="text-[10px] uppercase text-red-500 dark:text-red-400">Diff MusicXML</p>
+                      {debugInfo.diffReport.slice(0, 3).map((diff, idx) => (
+                        <p key={`diff-${idx}`}>
+                          {idx + 1}. Mesure {diff.measure ?? "?"} corde {diff.string} frette{" "}
+                          {diff.fret}: tab.json {diff.countTabJson ?? 0} vs MusicXML{" "}
+                          {diff.countMusicXML ?? 0}
+                        </p>
+                      ))}
+                      {debugInfo.diffReport.length > 3 && (
+                        <p>... et {debugInfo.diffReport.length - 3} autres différences</p>
                       )}
                     </div>
                   )}

@@ -22,7 +22,11 @@ from .schemas import (
     LibraryResponse,
     YoutubeRequest,
 )
-from .pipeline import render_musicxml_to_pdf
+from .pipeline import (
+    compare_tab_json_and_musicxml,
+    load_tab_json,
+    render_musicxml_to_pdf,
+)
 from .tasks import process_job
 from .utils import ensure_dir, get_job_logger, parse_last_musescore_run
 
@@ -234,6 +238,11 @@ def get_job_result(job_id: str):
     response = JobResultResponse(
         tabTxtUrl=f"{base_url}/files/{job_id}/tab.txt" if job.tab_txt_path else None,
         tabJsonUrl=f"{base_url}/files/{job_id}/tab.json" if job.tab_json_path else None,
+        tabMusicXmlUrl=f"{base_url}/files/{job_id}/result_tab.musicxml" if job.musicxml_path else None,
+        tabPdfUrl=f"{base_url}/files/{job_id}/result_tab.pdf" if job.pdf_path else None,
+        scoreJsonUrl=f"{base_url}/files/{job_id}/score.json" if job.score_json_path else None,
+        scoreMusicXmlUrl=f"{base_url}/files/{job_id}/result_score.musicxml" if job.score_musicxml_path else None,
+        scorePdfUrl=f"{base_url}/files/{job_id}/result_score.pdf" if job.score_pdf_path else None,
         musicXmlUrl=f"{base_url}/files/{job_id}/result.musicxml" if job.musicxml_path else None,
         pdfUrl=f"{base_url}/files/{job_id}/result.pdf" if job.pdf_path else None,
         midiUrl=f"{base_url}/files/{job_id}/output.mid" if job.midi_path else None,
@@ -276,6 +285,9 @@ def get_job_debug(job_id: str):
         "musicxml": _absolute(job.musicxml_path),
         "tabTxt": _absolute(job.tab_txt_path),
         "tabJson": _absolute(job.tab_json_path),
+        "scoreJson": _absolute(job.score_json_path),
+        "scoreMusicxml": _absolute(job.score_musicxml_path),
+        "scorePdf": _absolute(job.score_pdf_path),
         "logs": _absolute(job.logs_path),
     }
     debug_sizes = {
@@ -283,13 +295,33 @@ def get_job_debug(job_id: str):
         "musicxml": _size(job.musicxml_path),
         "tabTxt": _size(job.tab_txt_path),
         "tabJson": _size(job.tab_json_path),
+        "scoreJson": _size(job.score_json_path),
+        "scoreMusicxml": _size(job.score_musicxml_path),
+        "scorePdf": _size(job.score_pdf_path),
     }
     last_musescore = parse_last_musescore_run(job.logs_path) if job.logs_path else None
+    tab_json_count = None
+    musicxml_count = None
+    diff_report = []
+    if job.tab_json_path and job.musicxml_path and os.path.exists(job.tab_json_path) and os.path.exists(
+        job.musicxml_path
+    ):
+        try:
+            tab_json = load_tab_json(job.tab_json_path)
+            tab_json_count, musicxml_count, diff_report = compare_tab_json_and_musicxml(
+                tab_json, job.musicxml_path
+            )
+        except Exception as exc:
+            diff_report = [{"error": str(exc)}]
     db.close()
     return {
         "paths": debug_paths,
         "sizes": debug_sizes,
         "lastMuseScore": last_musescore,
+        "totalNotesTabJson": tab_json_count,
+        "totalNotesMusicXML": musicxml_count,
+        "totalNotesTabTxt": tab_json_count,
+        "diffReport": diff_report,
     }
 
 
@@ -303,6 +335,11 @@ def download_file(job_id: str, file_name: str):
     path_map = {
         "tab.txt": job.tab_txt_path,
         "tab.json": job.tab_json_path,
+        "result_tab.musicxml": job.musicxml_path,
+        "result_tab.pdf": job.pdf_path,
+        "score.json": job.score_json_path,
+        "result_score.musicxml": job.score_musicxml_path,
+        "result_score.pdf": job.score_pdf_path,
         "score.musicxml": job.musicxml_path,
         "result.musicxml": job.musicxml_path,
         "result.pdf": job.pdf_path,

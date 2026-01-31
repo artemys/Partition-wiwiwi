@@ -33,7 +33,7 @@
   - params : `outputType`, `tuning`, `capo`, `quality`
   - réponse : `{ jobId }`
 - `GET /jobs/{jobId}` : `{ status, stage, progress, errorMessage?, confidence?, createdAt }`
-- `GET /jobs/{jobId}/result` : `{ pdfUrl?, musicXmlUrl?, tabTxtUrl?, tabJsonUrl?, midiUrl? }`
+- `GET /jobs/{jobId}/result` : `{ pdfUrl?, musicXmlUrl?, tabTxtUrl?, tabJsonUrl?, midiUrl?, tabMusicXmlUrl?, tabPdfUrl?, scoreJsonUrl?, scoreMusicXmlUrl?, scorePdfUrl? }`
 - `GET /library` : liste paginée des jobs terminés (DONE/FAILED) + metadata
 - `DELETE /jobs/{jobId}` : supprime job + fichiers
 - `GET /files/...` : URLs stables pour téléchargement
@@ -46,5 +46,5 @@
 - UI en français, code en anglais.
 
 ### Persistance
-- Source de vérité backend (DB).
+- Source de vérité backend (DB) avec la table `jobs` enrichie de `score_json_path`, `score_musicxml_path` et `score_pdf_path`.
 - Pas de persistance côté frontend (state local uniquement).

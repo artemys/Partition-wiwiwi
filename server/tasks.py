@@ -9,6 +9,7 @@ from .config import SETTINGS
 from .db import SessionLocal
 from .models import Job
 from .pipeline import (
+    build_score_json,
     compute_confidence,
     convert_to_wav,
     download_youtube_audio,
@@ -21,10 +22,11 @@ from .pipeline import (
     run_basic_pitch,
     run_demucs,
     trim_wav,
+    write_score_musicxml,
     write_tab_musicxml,
     write_tab_outputs,
 )
-from .utils import ensure_dir, get_job_logger
+from .utils import ensure_dir, get_job_logger, write_json
 
 
 def _update_job(db: Session, job_id: str, **kwargs) -> None:
@@ -140,17 +142,20 @@ def process_job(job_id: str) -> None:
         tempo_source = "estimated" if detected_tempo else "unknown"
         if tempo_source == "unknown":
             warnings.append("Tempo inconnu, valeur par défaut utilisée.")
-        processed, metrics = post_process_notes(notes, job.quality)
+        processed, metrics = post_process_notes(notes, job.quality, tempo_bpm)
         if not processed:
             raise RuntimeError("Aucune note exploitable après post-traitement.")
 
+        score_json, _ = build_score_json(processed, job.quality, tempo_bpm, tempo_source)
+        score_json_path = os.path.join(output_dir, "score.json")
+        write_json(score_json_path, score_json)
         _stage(db, job_id, "TAB_GENERATION", 85, logger, "Génération de la tablature.")
         tab_notes, tuning_warning = map_notes_to_tab(processed, job.tuning, job.capo)
         if tuning_warning:
             warnings.append(tuning_warning)
         tab_txt_path = os.path.join(output_dir, "tab.txt")
         tab_json_path = os.path.join(output_dir, "tab.json")
-        write_tab_outputs(
+        tab_json, tab_txt_notes, tab_warnings = write_tab_outputs(
             tab_notes=tab_notes,
             tuning=job.tuning,
             capo=job.capo,
@@ -160,23 +165,46 @@ def process_job(job_id: str) -> None:
             warnings=warnings,
             tab_txt_path=tab_txt_path,
             tab_json_path=tab_json_path,
+            logger=logger,
         )
+        warnings.extend(tab_warnings)
 
         _stage(db, job_id, "EXPORT", 95, logger, "Export des fichiers.")
         title, artist = _derive_title_artist(job)
-        musicxml_path = os.path.join(output_dir, "result.musicxml")
-        write_tab_musicxml(
-            tab_notes=tab_notes,
+        tab_musicxml_path = os.path.join(output_dir, "result_tab.musicxml")
+        _, _, diff_report = write_tab_musicxml(
+            tab_json=tab_json,
             tuning=job.tuning,
             capo=job.capo,
             tempo_bpm=tempo_bpm,
             title=title,
             artist=artist,
             annotations=None,
-            output_path=musicxml_path,
+            output_path=tab_musicxml_path,
+            logger=logger,
         )
-        pdf_path = os.path.join(output_dir, "result.pdf")
-        render_musicxml_to_pdf(musicxml_path, pdf_path, logger)
+        if diff_report:
+            diff_warning = (
+                f"{len(diff_report)} différences entre tab.json et MusicXML tablature (voir logs)."
+            )
+            warnings.append(diff_warning)
+        tab_pdf_path = os.path.join(output_dir, "result_tab.pdf")
+        render_musicxml_to_pdf(tab_musicxml_path, tab_pdf_path, logger)
+        if not os.path.exists(tab_pdf_path) or os.path.getsize(tab_pdf_path) == 0:
+            raise RuntimeError("PDF tablature non généré.")
+        score_musicxml_path = os.path.join(output_dir, "result_score.musicxml")
+        write_score_musicxml(
+            score_json=score_json,
+            title=title,
+            artist=artist,
+            annotations=None,
+            output_path=score_musicxml_path,
+            logger=logger,
+        )
+        score_pdf_path = os.path.join(output_dir, "result_score.pdf")
+        render_musicxml_to_pdf(score_musicxml_path, score_pdf_path, logger)
+        if not os.path.exists(score_pdf_path) or os.path.getsize(score_pdf_path) == 0:
+            raise RuntimeError("PDF partition non généré.")
 
         confidence = compute_confidence(metrics, processed)
 
@@ -194,8 +222,11 @@ def process_job(job_id: str) -> None:
             tempo_bpm=tempo_bpm,
             tab_txt_path=tab_txt_path,
             tab_json_path=tab_json_path,
-            musicxml_path=musicxml_path,
-            pdf_path=pdf_path,
+            musicxml_path=tab_musicxml_path,
+            pdf_path=tab_pdf_path,
+            score_json_path=score_json_path,
+            score_musicxml_path=score_musicxml_path,
+            score_pdf_path=score_pdf_path,
             midi_path=midi_path,
         )
     except Exception as exc:  # noqa: BLE001

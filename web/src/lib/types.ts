@@ -10,6 +10,11 @@ export type JobStatusResponse = {
 export type JobResultResponse = {
   tabTxtUrl?: string | null;
   tabJsonUrl?: string | null;
+  tabMusicXmlUrl?: string | null;
+  tabPdfUrl?: string | null;
+  scoreJsonUrl?: string | null;
+  scoreMusicXmlUrl?: string | null;
+  scorePdfUrl?: string | null;
   musicXmlUrl?: string | null;
   pdfUrl?: string | null;
   midiUrl?: string | null;
@@ -50,4 +55,14 @@ export type JobDebugResponse = {
     stdout?: string | null;
     stderr?: string | null;
   } | null;
+  totalNotesTabJson?: number | null;
+  totalNotesMusicXML?: number | null;
+  totalNotesTabTxt?: number | null;
+  diffReport?: Array<{
+    measure?: number | null;
+    string?: number | null;
+    fret?: number | null;
+    countTabJson?: number | null;
+    countMusicXML?: number | null;
+  }>;
 };
