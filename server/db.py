@@ -46,3 +46,13 @@ def init_db() -> None:
                         "ALTER TABLE jobs ADD COLUMN transcription_mode TEXT DEFAULT 'polyphonic_basic_pitch'"
                     )
                 )
+            if "arrangement" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN arrangement TEXT DEFAULT 'lead'"))
+            if "confidence_threshold" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN confidence_threshold FLOAT DEFAULT 0.35"))
+            if "onset_window_ms" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN onset_window_ms INTEGER DEFAULT 60"))
+            if "max_jump_semitones" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN max_jump_semitones INTEGER DEFAULT 7"))
+            if "grid_resolution" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN grid_resolution TEXT DEFAULT 'auto'"))

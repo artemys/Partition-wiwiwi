@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -30,6 +30,11 @@ const formSchema = z
     capo: z.number().min(0).max(12),
     quality: z.enum(["fast", "accurate"]),
     transcriptionMode: z.enum(["best_free", "monophonic_tuner", "polyphonic_basic_pitch"]),
+    arrangement: z.enum(["lead", "poly"]),
+    confidenceThreshold: z.number().min(0.05).max(1),
+    onsetWindowMs: z.number().int().min(10).max(250),
+    maxJumpSemitones: z.number().int().min(1).max(24),
+    gridResolution: z.enum(["auto", "eighth", "sixteenth"]),
     startSeconds: z.number().int().min(0).max(12 * 60).optional(),
     endSeconds: z.number().int().min(0).max(12 * 60).optional(),
   })
@@ -83,6 +88,11 @@ export default function NewTranscriptionPage() {
       capo: 0,
       quality: "fast",
       transcriptionMode: "best_free",
+      arrangement: "lead",
+      confidenceThreshold: 0.35,
+      onsetWindowMs: 60,
+      maxJumpSemitones: 7,
+      gridResolution: "auto",
       youtubeUrl: "",
       audioFile: null,
       startSeconds: undefined,
@@ -90,13 +100,10 @@ export default function NewTranscriptionPage() {
     },
   });
 
-  const [playabilitySpan, setPlayabilitySpan] = useState<PlayabilitySpan>(4);
-  const [preferLowFrets, setPreferLowFrets] = useState(false);
-
-  useEffect(() => {
-    setPlayabilitySpan(getPlayabilitySpan());
-    setPreferLowFrets(getPreferLowFrets());
-  }, []);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [arrangementHint, setArrangementHint] = useState<FormValues["arrangement"]>("lead");
+  const [playabilitySpan] = useState<PlayabilitySpan>(() => getPlayabilitySpan());
+  const [preferLowFrets] = useState(() => getPreferLowFrets());
 
   const onSubmit = async (values: FormValues) => {
     try {
@@ -106,6 +113,11 @@ export default function NewTranscriptionPage() {
         capo: values.capo,
         quality: values.quality,
         transcriptionMode: values.transcriptionMode,
+        arrangement: values.arrangement,
+        confidenceThreshold: values.confidenceThreshold,
+        onsetWindowMs: values.onsetWindowMs,
+        maxJumpSemitones: values.maxJumpSemitones,
+        gridResolution: values.gridResolution,
         handSpan: playabilitySpan,
         preferLowFrets,
         audioFile: values.audioFile,
@@ -199,6 +211,107 @@ export default function NewTranscriptionPage() {
               “best_free” isole mieux la guitare et vise une partition + tablature plus cohérentes.
             </p>
           </div>
+
+          <Card className="space-y-4 border border-zinc-200 bg-white/50 dark:border-zinc-800 dark:bg-zinc-950/40">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Réglages avancés</p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                  Pour améliorer la lisibilité rythmique et réduire les notes parasites.
+                </p>
+              </div>
+              <Button type="button" variant="ghost" onClick={() => setShowAdvanced((v) => !v)}>
+                {showAdvanced ? "Masquer" : "Afficher"}
+              </Button>
+            </div>
+
+            {showAdvanced && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="arrangement">Arrangement</Label>
+                  <Select
+                    id="arrangement"
+                    {...register("arrangement", {
+                      onChange: (event) => setArrangementHint(event.target.value as FormValues["arrangement"]),
+                    })}
+                  >
+                    <option value="lead">Lead (monodie)</option>
+                    <option value="poly">Poly (accords)</option>
+                  </Select>
+                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                    Lead = 1 note max à un instant. Poly = conserve les accords.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="gridResolution">Grille rythmique</Label>
+                  <Select id="gridResolution" {...register("gridResolution")}>
+                    <option value="auto">Auto (selon qualité)</option>
+                    <option value="eighth">Croches (1/8)</option>
+                    <option value="sixteenth">Doubles-croches (1/16)</option>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="confidenceThreshold">Seuil de confiance</Label>
+                  <Input
+                    id="confidenceThreshold"
+                    type="number"
+                    step="0.01"
+                    min={0.05}
+                    max={1}
+                    {...register("confidenceThreshold", { valueAsNumber: true })}
+                  />
+                  {errors.confidenceThreshold && (
+                    <p className="text-xs text-red-600 dark:text-red-300">
+                      {errors.confidenceThreshold.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="onsetWindowMs">Fenêtre onset (ms)</Label>
+                  <Input
+                    id="onsetWindowMs"
+                    type="number"
+                    min={10}
+                    max={250}
+                    step={1}
+                    {...register("onsetWindowMs", { valueAsNumber: true })}
+                  />
+                  {errors.onsetWindowMs && (
+                    <p className="text-xs text-red-600 dark:text-red-300">{errors.onsetWindowMs.message}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="maxJumpSemitones">Saut max (demi-tons)</Label>
+                  <Input
+                    id="maxJumpSemitones"
+                    type="number"
+                    min={1}
+                    max={24}
+                    step={1}
+                    {...register("maxJumpSemitones", { valueAsNumber: true })}
+                  />
+                  {errors.maxJumpSemitones && (
+                    <p className="text-xs text-red-600 dark:text-red-300">
+                      {errors.maxJumpSemitones.message}
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-xl border border-zinc-200 bg-white/60 p-3 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-300">
+                  <p className="font-semibold text-zinc-800 dark:text-zinc-100">Astuce</p>
+                  <p className="mt-1">
+                    {arrangementHint === "lead"
+                      ? "En lead, l’app force une mélodie plus “humaine” (1 note), idéale pour riffs."
+                      : "En poly, l’app tente de conserver les accords — plus exigeant mais plus fidèle."}
+                  </p>
+                </div>
+              </div>
+            )}
+          </Card>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">

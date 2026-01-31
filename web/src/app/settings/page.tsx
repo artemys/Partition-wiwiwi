@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,17 +22,10 @@ import {
 } from "@/lib/storage";
 
 export default function SettingsPage() {
-  const [apiUrl, setApiUrl] = useState("");
-  const [format, setFormat] = useState<ExportFormat>("pdf");
-  const [playabilitySpan, setPlayabilitySpanState] = useState<PlayabilitySpan>(4);
-  const [preferLowFrets, setPreferLowFretsState] = useState(false);
-
-  useEffect(() => {
-    setApiUrl(getApiUrlOverride() ?? "");
-    setFormat(getPreferredExportFormat() ?? "pdf");
-    setPlayabilitySpanState(getPlayabilitySpan());
-    setPreferLowFretsState(getPreferLowFrets());
-  }, []);
+  const [apiUrl, setApiUrl] = useState(() => getApiUrlOverride() ?? "");
+  const [format, setFormat] = useState<ExportFormat>(() => getPreferredExportFormat() ?? "pdf");
+  const [playabilitySpan, setPlayabilitySpanState] = useState<PlayabilitySpan>(() => getPlayabilitySpan());
+  const [preferLowFrets, setPreferLowFretsState] = useState(() => getPreferLowFrets());
 
   const handleSave = () => {
     setApiUrlOverride(apiUrl.trim());

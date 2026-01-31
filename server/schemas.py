@@ -23,6 +23,7 @@ class JobMetadata(BaseModel):
     capo: Optional[int] = None
     quality: Optional[str] = None
     tempoBpm: Optional[float] = None
+    arrangement: Optional[str] = None
 
 
 class JobResultResponse(BaseModel):

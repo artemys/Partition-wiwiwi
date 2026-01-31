@@ -50,6 +50,7 @@ export type JobDebugResponse = {
     stemGuitarWav?: string | null;
     rawBasicPitchJson?: string | null;
     cleanNotesJson?: string | null;
+    onsetsJson?: string | null;
   };
   sizes: {
     pdf?: number | null;
@@ -63,6 +64,7 @@ export type JobDebugResponse = {
     stemGuitarWav?: number | null;
     rawBasicPitchJson?: number | null;
     cleanNotesJson?: number | null;
+    onsetsJson?: number | null;
   };
   lastMuseScore?: {
     command: string;
@@ -115,4 +117,13 @@ export type JobDebugResponse = {
   basicPitchNotesCountQuantized?: number | null;
   quantizationGridTicks?: number | null;
   quantizationDivisions?: number | null;
+  quantizationErrorsCount?: number | null;
+  arrangement?: "lead" | "poly" | null;
+  confidenceThreshold?: number | null;
+  onsetWindowMs?: number | null;
+  maxJumpSemitones?: number | null;
+  gridResolution?: "auto" | "eighth" | "sixteenth" | null;
+  avgShift?: number | null;
+  maxStretch?: number | null;
+  unreachableCount?: number | null;
 };

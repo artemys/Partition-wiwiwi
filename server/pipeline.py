@@ -1,4 +1,6 @@
 import os
+import bisect
+import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from collections import Counter
@@ -78,7 +80,8 @@ DEFAULT_SPAN_FRETS = 4
 SHIFT_PENALTY = 2.0
 OUTSIDE_SPAN_PENALTY = 5.0
 STRING_JUMP_PENALTY = 0.5
-HIGH_FRET_PENALTY = 0.2
+HIGH_FRET_PENALTY = 0.35
+HIGH_FRET_THRESHOLD = 15
 LOW_FRET_BONUS = 0.3
 LOW_FRET_THRESHOLD = 7
 CHORD_SPAN_OVER_PENALTY = 8.0
@@ -603,6 +606,183 @@ def detect_onsets(tracker: PitchTrackerResult, logger=None) -> np.ndarray:
     return frames
 
 
+def detect_onsets_from_wav(
+    wav_path: str,
+    *,
+    sr: int = SETTINGS.sample_rate,
+    hop_length: int = 512,
+    logger=None,
+) -> List[float]:
+    """Détecte les onsets (en secondes) sur un fichier wav.
+
+    Utilisé pour le mode best_free (stem guitare), afin de faire un onset gating des notes BasicPitch.
+    """
+    import librosa
+
+    try:
+        y, loaded_sr = librosa.load(wav_path, sr=sr, mono=True)
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("detect_onsets_from_wav: load failed: %s", exc)
+        return []
+    if y.size == 0 or loaded_sr <= 0:
+        return []
+    y = _apply_onset_band(y, loaded_sr)
+    y = _apply_noise_gate(y, threshold=0.01)
+    y = _normalize_rms(y)
+    try:
+        onset_times = librosa.onset.onset_detect(
+            y=y,
+            sr=loaded_sr,
+            hop_length=hop_length,
+            backtrack=False,
+            units="time",
+        )
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("detect_onsets_from_wav: onset_detect failed: %s", exc)
+        return []
+    times = [float(x) for x in np.asarray(onset_times, dtype=float).tolist() if np.isfinite(x)]
+    times = sorted(set(t for t in times if t >= 0.0))
+    if logger:
+        logger.info("Onsets détectés (wav): %d", len(times))
+    return times
+
+
+def _nearest_onset_distance_seconds(onsets: List[float], t: float) -> Optional[float]:
+    if not onsets:
+        return None
+    idx = bisect.bisect_left(onsets, t)
+    best = None
+    for j in (idx - 1, idx):
+        if 0 <= j < len(onsets):
+            dist = abs(float(onsets[j]) - float(t))
+            if best is None or dist < best:
+                best = dist
+    return best
+
+
+def _apply_onset_gating_to_note_dicts(
+    notes: List[Dict[str, Any]],
+    onsets: List[float],
+    *,
+    onset_window_ms: int,
+    min_short_seconds: float = 0.12,
+    confidence_soft_threshold: float = 0.45,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Bloque les nouveaux starts hors attaque.
+
+    - Si le start n'est pas proche d'un onset (±window), on tente de fusionner avec la note précédente
+      (si pitch proche), sinon on ignore si courte / faible confidence.
+    """
+    if not notes or not onsets:
+        return notes, {"dropped": 0, "merged": 0, "kept": len(notes)}
+    window_s = max(0.0, float(onset_window_ms)) / 1000.0
+    window_s = min(window_s, 0.25)
+    dropped = 0
+    merged = 0
+    kept: List[Dict[str, Any]] = []
+    for n in sorted(notes, key=lambda x: (float(x.get("start", 0.0)), int(x.get("pitch", 0)))):
+        start = float(n["start"])
+        end = float(n["end"])
+        pitch = int(n["pitch"])
+        conf = float(n.get("confidence", 0.0))
+        dur = max(0.0, end - start)
+        dist = _nearest_onset_distance_seconds(onsets, start)
+        near = dist is not None and dist <= window_s
+        if near:
+            kept.append(n)
+            continue
+        # Hors attaque: on limite les changements.
+        if kept:
+            prev = kept[-1]
+            prev_pitch = int(prev["pitch"])
+            if abs(pitch - prev_pitch) <= 1:
+                prev["end"] = max(float(prev["end"]), end)
+                prev["confidence"] = float(max(float(prev.get("confidence", 0.0)), conf))
+                merged += 1
+                continue
+        if dur < min_short_seconds or conf < confidence_soft_threshold:
+            dropped += 1
+            continue
+        # Cas “fort” mais off-onset: on préfère ignorer plutôt que créer du rythme illisible.
+        dropped += 1
+    return kept, {"dropped": dropped, "merged": merged, "kept": len(kept)}
+
+
+def _extract_lead_from_note_dicts(
+    notes: List[Dict[str, Any]],
+    *,
+    bin_ms: int = 30,
+    max_jump_semitones: int = 7,
+    max_jump_window_seconds: float = 0.12,
+    medium_center_midi: int = 64,
+) -> List[Dict[str, Any]]:
+    """Sélectionne une seule note par bin temporel (monodie stable).
+
+    Tie-breakers:
+    - confidence max
+    - pitch proche de la note précédente (minimise les sauts)
+    - bonus registre médium (éviter les harmoniques très aigües)
+    """
+    if not notes:
+        return []
+    bin_s = max(0.02, min(0.05, float(bin_ms) / 1000.0))
+    sorted_notes = sorted(notes, key=lambda x: (float(x["start"]), -float(x.get("confidence", 0.0))))
+    # Group by time bin.
+    groups: Dict[int, List[Dict[str, Any]]] = {}
+    for n in sorted_notes:
+        key = int(round(float(n["start"]) / bin_s))
+        groups.setdefault(key, []).append(n)
+    lead: List[Dict[str, Any]] = []
+    prev_pitch: Optional[int] = None
+    prev_start: Optional[float] = None
+    for key in sorted(groups.keys()):
+        candidates = groups[key]
+        if not candidates:
+            continue
+        best = None
+        best_score = -1e9
+        for cand in candidates:
+            pitch = int(cand["pitch"])
+            conf = float(cand.get("confidence", 0.0))
+            # Base score: confidence.
+            score = conf * 10.0
+            # Bonus registre médium + pénalité aigu.
+            score -= 0.10 * abs(pitch - medium_center_midi)
+            if pitch >= 84:
+                score -= 0.25 * (pitch - 83)
+            # Continuité (voice-leading).
+            if prev_pitch is not None and prev_start is not None:
+                jump = abs(pitch - prev_pitch)
+                score -= 0.25 * jump
+                dt = float(cand["start"]) - float(prev_start)
+                if dt < max_jump_window_seconds and jump > max_jump_semitones and conf < 0.85:
+                    score -= 50.0  # quasi impossible
+            if score > best_score:
+                best_score = score
+                best = cand
+        if best is None:
+            continue
+        lead.append(best)
+        prev_pitch = int(best["pitch"])
+        prev_start = float(best["start"])
+    # Resort and de-duplicate overlaps (garde la plus confiante si collision).
+    lead.sort(key=lambda x: float(x["start"]))
+    out: List[Dict[str, Any]] = []
+    for n in lead:
+        if not out:
+            out.append(n)
+            continue
+        prev = out[-1]
+        if abs(float(n["start"]) - float(prev["start"])) <= bin_s * 0.5:
+            if float(n.get("confidence", 0.0)) > float(prev.get("confidence", 0.0)):
+                out[-1] = n
+        else:
+            out.append(n)
+    return out
+
+
 def estimate_tempo(audio: np.ndarray, sr: int, logger=None) -> Tuple[float, str]:
     import librosa
 
@@ -941,11 +1121,23 @@ def post_process_basic_pitch_notes(
     harmonic_window_seconds: float = 0.2,
     harmonic_interval_semitones: int = 12,
     lead_mode: bool = False,
+    onsets: Optional[List[float]] = None,
+    onset_window_ms: int = 60,
+    max_jump_semitones: int = 7,
+    lead_bin_ms: int = 30,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Nettoyage 'musical' des notes Basic Pitch (start/end/pitch/confidence)."""
     if not notes:
         return [], {
-            "counts": {"raw": 0, "afterFilter": 0, "afterMerge": 0, "afterHarmonics": 0, "afterLead": 0}
+            "counts": {
+                "raw": 0,
+                "afterFilter": 0,
+                "afterOnsetGate": 0,
+                "afterMerge": 0,
+                "afterHarmonics": 0,
+                "afterJumpFilter": 0,
+                "afterLead": 0,
+            }
         }
 
     raw_count = len(notes)
@@ -970,9 +1162,21 @@ def post_process_basic_pitch_notes(
     filtered.sort(key=lambda x: (x["start"], x["pitch"]))
     after_filter = len(filtered)
 
+    # 3.1b Onset gating (optionnel).
+    gated = filtered
+    onset_debug = {"dropped": 0, "merged": 0, "kept": len(filtered)}
+    if onsets:
+        gated, onset_debug = _apply_onset_gating_to_note_dicts(
+            gated,
+            list(onsets),
+            onset_window_ms=int(onset_window_ms),
+            confidence_soft_threshold=max(float(confidence_threshold) + 0.05, 0.45),
+        )
+    after_onset_gate = len(gated)
+
     # 3.2 Fusion notes consécutives (même pitch +/-1, gap < 40ms).
     merged: List[Dict[str, Any]] = []
-    for n in filtered:
+    for n in gated:
         if not merged:
             merged.append(n)
             continue
@@ -1018,34 +1222,67 @@ def post_process_basic_pitch_notes(
     after_harm = [n for ok, n in zip(kept, merged) if ok]
     after_harmonics = len(after_harm)
 
+    # Anti-harmoniques (séquentiel): si +12, très court et moins confiant que la note précédente -> drop.
+    seq_filtered: List[Dict[str, Any]] = []
+    last_kept: Optional[Dict[str, Any]] = None
+    for n in sorted(after_harm, key=lambda x: float(x["start"])):
+        if last_kept is None:
+            seq_filtered.append(n)
+            last_kept = n
+            continue
+        dur = float(n["end"]) - float(n["start"])
+        interval = int(n["pitch"]) - int(last_kept["pitch"])
+        if abs(interval - harmonic_interval_semitones) <= 1 and dur < 0.12 and float(n["confidence"]) < float(
+            last_kept["confidence"]
+        ):
+            continue
+        seq_filtered.append(n)
+        last_kept = n
+    after_harm = seq_filtered
+    after_harmonics = len(after_harm)
+
     # Filtre durée minimale (après anti-harmoniques).
     after_harm = [
         n for n in after_harm if (float(n["end"]) - float(n["start"])) >= float(min_duration_seconds)
     ]
     after_harmonics = len(after_harm)
 
-    # 3.4 Lead mode (optionnel): à chaque start (tolérance), garder la note la plus confiante.
     final = after_harm
+
+    # 3.4 Lead mode (optionnel): monodie stable + voice-leading.
     if lead_mode and final:
-        final.sort(key=lambda x: x["start"])
-        groups: List[List[Dict[str, Any]]] = []
-        current = [final[0]]
-        for n in final[1:]:
-            if abs(float(n["start"]) - float(current[-1]["start"])) <= 0.02:
-                current.append(n)
-            else:
-                groups.append(current)
-                current = [n]
-        groups.append(current)
-        final = [max(g, key=lambda x: float(x["confidence"])) for g in groups]
+        final = _extract_lead_from_note_dicts(
+            final,
+            bin_ms=int(lead_bin_ms),
+            max_jump_semitones=int(max_jump_semitones),
+        )
+
+    # 3.5 Limiter les sauts (monodie): si jump énorme en très peu de temps, ignorer sauf forte confidence.
+    jump_filtered: List[Dict[str, Any]] = []
+    last_kept = None
+    for n in sorted(final, key=lambda x: float(x["start"])):
+        if last_kept is None:
+            jump_filtered.append(n)
+            last_kept = n
+            continue
+        dt = float(n["start"]) - float(last_kept["start"])
+        jump = abs(int(n["pitch"]) - int(last_kept["pitch"]))
+        if dt < 0.12 and jump > int(max_jump_semitones) and float(n["confidence"]) < 0.85:
+            continue
+        jump_filtered.append(n)
+        last_kept = n
+    final = jump_filtered
+    after_jump = len(final)
     after_lead = len(final)
 
     stats = {
         "counts": {
             "raw": raw_count,
             "afterFilter": after_filter,
+            "afterOnsetGate": after_onset_gate,
             "afterMerge": after_merge,
             "afterHarmonics": after_harmonics,
+            "afterJumpFilter": after_jump,
             "afterLead": after_lead,
         },
         "params": {
@@ -1054,6 +1291,10 @@ def post_process_basic_pitch_notes(
             "minDurationMs": int(round(min_duration_seconds * 1000.0)),
             "harmonicWindowMs": int(round(harmonic_window_seconds * 1000.0)),
             "leadMode": bool(lead_mode),
+            "onsetWindowMs": int(onset_window_ms),
+            "maxJumpSemitones": int(max_jump_semitones),
+            "leadBinMs": int(lead_bin_ms),
+            "onsetGating": onset_debug,
         },
     }
     return final, stats
@@ -1096,6 +1337,71 @@ def quantize_basic_pitch_notes(
         out.append(NoteEvent(start=float(start_q), duration=float(dur_q), pitch=pitch, velocity=velocity))
     out.sort(key=lambda ev: (ev.start, ev.pitch))
     return out
+
+
+def quantize_basic_pitch_notes_robust(
+    notes: List[Dict[str, Any]],
+    *,
+    tempo_bpm: float,
+    divisions: int = 8,
+    grid_ticks: int = 4,
+    min_duration_ticks: int = 1,
+    allowed_duration_ticks: Optional[List[int]] = None,
+) -> Tuple[List[NoteEvent], Dict[str, Any]]:
+    """Quantization robuste + compteur d'erreurs.
+
+    - snap start/end sur une grille (grid_ticks)
+    - évite des durées "impossibles" en les rabattant sur une liste autorisée
+      (ex: {1/16, 1/8, 1/4, 1/2, 1})
+    """
+    if not notes:
+        return [], {"quantizationErrorsCount": 0}
+    tempo = float(tempo_bpm or SETTINGS.default_tempo_bpm)
+    if tempo <= 0:
+        tempo = float(SETTINGS.default_tempo_bpm)
+    seconds_per_beat = 60.0 / tempo
+    divisions = max(1, int(divisions))
+    grid_ticks = max(1, int(grid_ticks))
+    min_duration_ticks = max(1, int(min_duration_ticks))
+    allowed = None
+    if allowed_duration_ticks:
+        allowed = sorted({int(x) for x in allowed_duration_ticks if x is not None and int(x) > 0})
+        if not allowed:
+            allowed = None
+
+    errors = 0
+    out: List[NoteEvent] = []
+    for n in notes:
+        start_s = float(n["start"])
+        end_s = float(n["end"])
+        pitch = int(n["pitch"])
+        conf = float(n.get("confidence", 0.0))
+        start_tick_raw = float(start_s) / float(seconds_per_beat) * float(divisions)
+        end_tick_raw = float(end_s) / float(seconds_per_beat) * float(divisions)
+        start_tick = int(round(start_tick_raw))
+        end_tick = int(round(end_tick_raw))
+        snap_start = int(round(start_tick / grid_ticks) * grid_ticks)
+        snap_end = int(round(end_tick / grid_ticks) * grid_ticks)
+        if snap_start != start_tick or snap_end != end_tick:
+            errors += 1
+        snap_end = max(snap_end, snap_start + min_duration_ticks)
+        duration_tick = snap_end - snap_start
+        if allowed is not None and duration_tick not in allowed:
+            # Rabat sur la durée autorisée la plus proche (avec plancher min_duration_ticks).
+            candidates = [d for d in allowed if d >= min_duration_ticks]
+            if not candidates:
+                candidates = allowed
+            best = min(candidates, key=lambda d: abs(int(d) - int(duration_tick)))
+            if best != duration_tick:
+                errors += 1
+                duration_tick = int(best)
+                snap_end = snap_start + duration_tick
+        start_q = float(snap_start) / float(divisions) * seconds_per_beat
+        dur_q = float(duration_tick) / float(divisions) * seconds_per_beat
+        velocity = int(clamp(round(conf * 127.0), 24, 127))
+        out.append(NoteEvent(start=float(start_q), duration=float(dur_q), pitch=pitch, velocity=velocity))
+    out.sort(key=lambda ev: (ev.start, ev.pitch))
+    return out, {"quantizationErrorsCount": int(errors)}
 
 
 def post_process_notes(
@@ -1358,11 +1664,19 @@ def _calculate_candidate_cost(
 ) -> Tuple[float, int]:
     new_hand_pos = _hand_pos_from_fret(fret)
     shift_cost = abs(new_hand_pos - hand_pos) * SHIFT_PENALTY
-    outside = 0.0 if hand_pos <= fret <= hand_pos + hand_span else OUTSIDE_SPAN_PENALTY
+    # Stretch cost: si la note sort du "fret_base + span", c'est très pénalisé (jouabilité).
+    outside_over = 0
+    if fret < hand_pos:
+        outside_over = hand_pos - fret
+    elif fret > hand_pos + hand_span:
+        outside_over = fret - (hand_pos + hand_span)
+    outside = 0.0
+    if outside_over > 0:
+        outside = OUTSIDE_SPAN_PENALTY * (2.5 + 1.5 * outside_over)
     string_cost = (
         abs(string_idx - last_string) * STRING_JUMP_PENALTY if last_string is not None else 0.0
     )
-    high_cost = max(0, fret - 12) * HIGH_FRET_PENALTY
+    high_cost = max(0, fret - HIGH_FRET_THRESHOLD) * HIGH_FRET_PENALTY
     low_bonus = LOW_FRET_BONUS if prefer_low and fret <= LOW_FRET_THRESHOLD else 0.0
     total = shift_cost + outside + string_cost + high_cost - low_bonus
     return total, new_hand_pos
@@ -1822,12 +2136,44 @@ def map_notes_to_tab(
         1.0,
     )
 
+    shifts: List[float] = []
+    max_stretch = 0
+    unreachable_count = 0
+    for ev in fingering_debug:
+        if ev.get("noteMissing"):
+            unreachable_count += 1
+        chosen = ev.get("chosen")
+        if not chosen:
+            continue
+        try:
+            before = int(ev.get("handPosBefore", 0))
+            after = int(ev.get("handPosAfter", 0))
+        except (TypeError, ValueError):
+            before = 0
+            after = 0
+        shifts.append(abs(after - before))
+        # "stretch" = distance fret - fret_base (handPosBefore).
+        if isinstance(chosen, dict):
+            fret = int(chosen.get("fret", 0))
+            max_stretch = max(max_stretch, max(0, fret - before))
+        elif isinstance(chosen, list):
+            try:
+                frets = [int(item.get("fret", 0)) for item in chosen if isinstance(item, dict)]
+            except Exception:  # noqa: BLE001
+                frets = []
+            if frets:
+                max_stretch = max(max_stretch, max(0, max(frets) - before))
+    avg_shift = float(np.mean(shifts)) if shifts else 0.0
+
     playability_debug = {
         "handSpan": hand_span,
         "preferLowFrets": prefer_low_frets,
         "totalCost": total_cost,
         "averageCost": average_cost,
         "playabilityScore": playability_score,
+        "avgShift": avg_shift,
+        "maxStretch": int(max_stretch),
+        "unreachableCount": int(unreachable_count),
         "events": fingering_debug,
     }
 

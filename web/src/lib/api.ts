@@ -45,6 +45,11 @@ export async function createJob(params: {
   capo: number;
   quality: "fast" | "accurate";
   transcriptionMode?: "best_free" | "monophonic_tuner" | "polyphonic_basic_pitch";
+  arrangement?: "lead" | "poly";
+  confidenceThreshold?: number;
+  onsetWindowMs?: number;
+  maxJumpSemitones?: number;
+  gridResolution?: "auto" | "eighth" | "sixteenth";
   audioFile?: File | null;
   youtubeUrl?: string | null;
   startSeconds?: number;
@@ -60,6 +65,21 @@ export async function createJob(params: {
   });
   const transcriptionMode = params.transcriptionMode ?? "best_free";
   query.set("transcriptionMode", transcriptionMode);
+  if (params.arrangement) {
+    query.set("arrangement", params.arrangement);
+  }
+  if (Number.isFinite(params.confidenceThreshold ?? NaN)) {
+    query.set("confidenceThreshold", String(params.confidenceThreshold));
+  }
+  if (Number.isFinite(params.onsetWindowMs ?? NaN)) {
+    query.set("onsetWindowMs", String(params.onsetWindowMs));
+  }
+  if (Number.isFinite(params.maxJumpSemitones ?? NaN)) {
+    query.set("maxJumpSemitones", String(params.maxJumpSemitones));
+  }
+  if (params.gridResolution) {
+    query.set("gridResolution", params.gridResolution);
+  }
   if (Number.isFinite(params.handSpan ?? NaN)) {
     query.set("handSpan", String(params.handSpan));
   }

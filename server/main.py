@@ -117,6 +117,11 @@ async def create_job(
     capo: int = Query(0),
     quality: str = Query("fast"),
     transcriptionMode: str = Query("best_free"),
+    arrangement: str = Query("lead"),
+    confidenceThreshold: float = Query(0.35),
+    onsetWindowMs: int = Query(60),
+    maxJumpSemitones: int = Query(7),
+    gridResolution: str = Query("auto"),
     mode: Optional[str] = Query(None),
     target: str = Query("GUITAR_BEST_EFFORT"),
     handSpan: int = Query(4),
@@ -131,11 +136,17 @@ async def create_job(
     output_type = outputType.lower()
     quality = quality.lower()
     transcription_mode = transcriptionMode.lower()
+    arrangement = arrangement.lower()
+    grid_resolution = gridResolution.lower()
     if transcription_mode not in ("monophonic_tuner", "polyphonic_basic_pitch", "best_free"):
         raise HTTPException(
             status_code=400,
             detail="transcriptionMode doit être 'monophonic_tuner', 'polyphonic_basic_pitch' ou 'best_free'.",
         )
+    if arrangement not in ("lead", "poly"):
+        raise HTTPException(status_code=400, detail="arrangement doit être 'lead' ou 'poly'.")
+    if grid_resolution not in ("auto", "eighth", "sixteenth"):
+        raise HTTPException(status_code=400, detail="gridResolution doit être 'auto', 'eighth' ou 'sixteenth'.")
     if output_type not in ("tab", "score", "both"):
         raise HTTPException(status_code=400, detail="outputType doit être tab, score ou both.")
     if audio is None and body is None and request is not None:
@@ -167,6 +178,13 @@ async def create_job(
 
     db = SessionLocal()
     capo = max(0, min(12, capo))
+    confidence_threshold = float(confidenceThreshold or 0.0)
+    if confidence_threshold <= 0.0 or confidence_threshold > 1.0:
+        raise HTTPException(status_code=400, detail="confidenceThreshold doit être dans (0, 1].")
+    onset_window_ms = int(onsetWindowMs)
+    onset_window_ms = max(10, min(250, onset_window_ms))
+    max_jump = int(maxJumpSemitones)
+    max_jump = max(1, min(24, max_jump))
     if startSeconds is not None and startSeconds < 0:
         raise HTTPException(status_code=400, detail="startSeconds doit être >= 0.")
     if endSeconds is not None and endSeconds < 0:
@@ -196,6 +214,11 @@ async def create_job(
         target=target,
         warnings_json=json.dumps([]),
         transcription_mode=transcription_mode,
+        arrangement=arrangement,
+        confidence_threshold=confidence_threshold,
+        onset_window_ms=onset_window_ms,
+        max_jump_semitones=max_jump,
+        grid_resolution=grid_resolution,
     )
     db.add(job)
     db.commit()
@@ -266,6 +289,7 @@ def get_job_result(job_id: str):
             capo=job.capo,
             quality=job.quality,
             tempoBpm=job.tempo_bpm,
+            arrangement=job.arrangement,
         ),
         warnings=warnings,
     )
@@ -299,6 +323,7 @@ def get_job_debug(job_id: str):
     stem_guitar_path = os.path.join(output_dir, "stem_guitar.wav")
     raw_basic_pitch_path = os.path.join(output_dir, "raw_basic_pitch.json")
     clean_notes_path = os.path.join(output_dir, "clean_notes.json")
+    onsets_path = os.path.join(output_dir, "onsets.json")
     debug_paths = {
         "pdf": _absolute(job.pdf_path),
         "musicxml": _absolute(job.musicxml_path),
@@ -312,6 +337,7 @@ def get_job_debug(job_id: str):
         "stemGuitarWav": _absolute(stem_guitar_path) if os.path.exists(stem_guitar_path) else None,
         "rawBasicPitchJson": _absolute(raw_basic_pitch_path) if os.path.exists(raw_basic_pitch_path) else None,
         "cleanNotesJson": _absolute(clean_notes_path) if os.path.exists(clean_notes_path) else None,
+        "onsetsJson": _absolute(onsets_path) if os.path.exists(onsets_path) else None,
     }
     debug_sizes = {
         "pdf": _size(job.pdf_path),
@@ -325,6 +351,7 @@ def get_job_debug(job_id: str):
         "stemGuitarWav": _size(stem_guitar_path),
         "rawBasicPitchJson": _size(raw_basic_pitch_path),
         "cleanNotesJson": _size(clean_notes_path),
+        "onsetsJson": _size(onsets_path),
     }
     last_musescore = parse_last_musescore_run(job.logs_path) if job.logs_path else None
     tab_json_count = None
@@ -390,6 +417,15 @@ def get_job_debug(job_id: str):
         "basicPitchNotesCountQuantized": debug_info.get("basicPitchNotesCountQuantized"),
         "quantizationGridTicks": debug_info.get("quantizationGridTicks"),
         "quantizationDivisions": debug_info.get("quantizationDivisions"),
+        "quantizationErrorsCount": debug_info.get("quantizationErrorsCount"),
+        "arrangement": debug_info.get("arrangement"),
+        "confidenceThreshold": debug_info.get("confidenceThreshold"),
+        "onsetWindowMs": debug_info.get("onsetWindowMs"),
+        "maxJumpSemitones": debug_info.get("maxJumpSemitones"),
+        "gridResolution": debug_info.get("gridResolution"),
+        "avgShift": debug_info.get("avgShift"),
+        "maxStretch": debug_info.get("maxStretch"),
+        "unreachableCount": debug_info.get("unreachableCount"),
     }
 
 
@@ -420,6 +456,7 @@ def download_file(job_id: str, file_name: str):
             "stem_guitar.wav": os.path.join(output_dir, "stem_guitar.wav"),
             "raw_basic_pitch.json": os.path.join(output_dir, "raw_basic_pitch.json"),
             "clean_notes.json": os.path.join(output_dir, "clean_notes.json"),
+            "onsets.json": os.path.join(output_dir, "onsets.json"),
         }
     )
     target = path_map.get(file_name)

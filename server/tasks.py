@@ -21,6 +21,7 @@ from .pipeline import (
     compute_confidence,
     convert_to_wav,
     detect_onsets,
+    detect_onsets_from_wav,
     download_youtube_audio,
     ensure_dependencies,
     estimate_tempo,
@@ -33,6 +34,7 @@ from .pipeline import (
     post_process_notes,
     preprocess_guitar_stem,
     quantize_basic_pitch_notes,
+    quantize_basic_pitch_notes_robust,
     render_musicxml_to_pdf,
     run_basic_pitch,
     run_basic_pitch_notes,
@@ -240,6 +242,7 @@ def _process_best_free_transcription(
     ensure_dir(basic_pitch_dir)
     raw_path = os.path.join(output_dir, "raw_basic_pitch.json")
     clean_path = os.path.join(output_dir, "clean_notes.json")
+    onsets_json_path = os.path.join(output_dir, "onsets.json")
 
     raw_notes: List[Dict[str, object]] = []
     midi_path = os.path.join(output_dir, "output.mid")
@@ -272,10 +275,28 @@ def _process_best_free_transcription(
         },
     )
 
+    onsets = detect_onsets_from_wav(stem_path, sr=SETTINGS.sample_rate, hop_length=512, logger=logger)
+    with open(onsets_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "hopLength": 512,
+                "sampleRate": int(SETTINGS.sample_rate),
+                "onsetTimes": [float(x) for x in onsets],
+            },
+            f,
+            ensure_ascii=True,
+            indent=2,
+        )
+
+    arrangement = (getattr(job, "arrangement", None) or "lead").lower()
+    lead_mode = arrangement == "lead"
     cleaned_notes, clean_stats = post_process_basic_pitch_notes(
         raw_notes,
         confidence_threshold=confidence_threshold,
-        lead_mode=False,
+        lead_mode=lead_mode,
+        onsets=onsets,
+        onset_window_ms=int(getattr(job, "onset_window_ms", 60) or 60),
+        max_jump_semitones=int(getattr(job, "max_jump_semitones", 7) or 7),
     )
 
     write_json(
@@ -286,15 +307,26 @@ def _process_best_free_transcription(
         },
     )
 
-    # Quantization: divisions=8, grille dépend de la qualité.
+    # Quantization: divisions=8, grille dépend de la qualité / override gridResolution.
     quality = (job.quality or "fast").lower()
-    grid_ticks = 4 if quality == "fast" else 2  # spb/2 ou spb/4
-    quantized = quantize_basic_pitch_notes(
+    grid_resolution = (getattr(job, "grid_resolution", None) or "auto").lower()
+    if grid_resolution == "eighth":
+        grid_ticks = 4
+        grid_used = "eighth"
+    elif grid_resolution == "sixteenth":
+        grid_ticks = 2
+        grid_used = "sixteenth"
+    else:
+        grid_ticks = 4 if quality == "fast" else 2  # spb/2 ou spb/4
+        grid_used = "auto-fast" if quality == "fast" else "auto-normal"
+    allowed = [2, 4, 8, 16, 32]  # {1/16, 1/8, 1/4, 1/2, 1} en ticks (divisions=8)
+    quantized, quant_debug = quantize_basic_pitch_notes_robust(
         cleaned_notes,
         tempo_bpm=tempo_bpm,
         divisions=divisions,
         grid_ticks=grid_ticks,
         min_duration_ticks=1,
+        allowed_duration_ticks=allowed,
     )
 
     # Metrics pour compute_confidence (fallback simple + densité).
@@ -311,13 +343,18 @@ def _process_best_free_transcription(
         {
             "bestFreeRawNotes": float(len(raw_notes)),
             "bestFreeAfterFilter": float(counts.get("afterFilter") or 0),
+            "bestFreeAfterOnsetGate": float(counts.get("afterOnsetGate") or 0),
             "bestFreeAfterMerge": float(counts.get("afterMerge") or 0),
             "bestFreeAfterHarmonics": float(counts.get("afterHarmonics") or 0),
+            "bestFreeAfterJumpFilter": float(counts.get("afterJumpFilter") or 0),
             "bestFreeAfterLead": float(counts.get("afterLead") or 0),
             "bestFreeCleanNotes": float(len(cleaned_notes)),
             "bestFreeQuantizedNotes": float(len(quantized)),
             "bestFreeGridTicks": float(grid_ticks),
             "bestFreeDivisions": float(divisions),
+            "bestFreeGridUsed": 1.0 if grid_used else 0.0,
+            "bestFreeArrangementIsLead": 1.0 if lead_mode else 0.0,
+            "bestFreeQuantizationErrors": float(int((quant_debug or {}).get("quantizationErrorsCount") or 0)),
         }
     )
 
@@ -452,7 +489,7 @@ def process_job(job_id: str) -> None:
                 logger,
                 warnings,
                 output_dir,
-                confidence_threshold=0.35,
+                confidence_threshold=float(getattr(job, "confidence_threshold", 0.35) or 0.35),
                 divisions=8,
             )
             pitch_mode = "best_free"
@@ -631,6 +668,9 @@ def process_job(job_id: str) -> None:
             "tabMusicXmlNotesCount": tab_musicxml_notes_count,
             "playabilityScore": playability_debug.get("playabilityScore"),
             "playabilityCost": playability_debug.get("totalCost"),
+            "avgShift": playability_debug.get("avgShift"),
+            "maxStretch": playability_debug.get("maxStretch"),
+            "unreachableCount": playability_debug.get("unreachableCount"),
             "handSpan": job.hand_span,
             "preferLowFrets": bool(job.prefer_low_frets),
             "fingeringDebugPath": fingering_debug_path,
@@ -641,16 +681,25 @@ def process_job(job_id: str) -> None:
                     "stemUsed": stem_used,
                     "stemGuitarPath": stem_guitar_path,
                     "stemPreprocess": stem_preprocess,
+                    "arrangement": job.arrangement,
+                    "confidenceThreshold": job.confidence_threshold,
+                    "onsetWindowMs": job.onset_window_ms,
+                    "maxJumpSemitones": job.max_jump_semitones,
+                    "gridResolution": job.grid_resolution,
                     "basicPitchNotesCountRaw": int(metrics.get("bestFreeRawNotes") or 0),
                     "basicPitchNotesCountAfterFilter": int(metrics.get("bestFreeAfterFilter") or 0),
+                    "basicPitchNotesCountAfterOnsetGate": int(metrics.get("bestFreeAfterOnsetGate") or 0),
                     "basicPitchNotesCountAfterMerge": int(metrics.get("bestFreeAfterMerge") or 0),
                     "basicPitchNotesCountAfterHarmonics": int(metrics.get("bestFreeAfterHarmonics") or 0),
+                    "basicPitchNotesCountAfterJumpFilter": int(metrics.get("bestFreeAfterJumpFilter") or 0),
                     "basicPitchNotesCountAfterLead": int(metrics.get("bestFreeAfterLead") or 0),
                     "basicPitchNotesCountQuantized": int(metrics.get("bestFreeQuantizedNotes") or 0),
                     "quantizationGridTicks": int(metrics.get("bestFreeGridTicks") or 0),
                     "quantizationDivisions": int(metrics.get("bestFreeDivisions") or divisions),
+                    "quantizationErrorsCount": int(metrics.get("bestFreeQuantizationErrors") or 0),
                     "rawBasicPitchPath": os.path.join(output_dir, "raw_basic_pitch.json"),
                     "cleanNotesPath": os.path.join(output_dir, "clean_notes.json"),
+                    "onsetsPath": os.path.join(output_dir, "onsets.json"),
                 }
             )
         debug_info.update(

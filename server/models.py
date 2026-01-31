@@ -35,6 +35,11 @@ class Job(Base):
     mode = Column(String, nullable=True)
     target = Column(String, nullable=True)
     transcription_mode = Column(String, nullable=False, default="polyphonic_basic_pitch")
+    arrangement = Column(String, nullable=False, default="lead")  # lead|poly
+    confidence_threshold = Column(Float, nullable=False, default=0.35)
+    onset_window_ms = Column(Integer, nullable=False, default=60)
+    max_jump_semitones = Column(Integer, nullable=False, default=7)
+    grid_resolution = Column(String, nullable=False, default="auto")  # auto|eighth|sixteenth
 
     duration_seconds = Column(Float, nullable=True)
     tempo_bpm = Column(Float, nullable=True)

@@ -261,11 +261,17 @@ export default function JobDetailsPage() {
 
   useEffect(() => {
     const tabUrl = result?.tabTxtUrl;
-    if (!tabUrl) {
-      setTabPreview(null);
-      return;
-    }
     let cancelled = false;
+    if (!tabUrl) {
+      queueMicrotask(() => {
+        if (!cancelled) {
+          setTabPreview(null);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     fetch(tabUrl)
       .then((res) => res.text())
       .then((text) => {
