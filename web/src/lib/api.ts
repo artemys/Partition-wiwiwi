@@ -46,6 +46,8 @@ export async function createJob(params: {
   quality: "fast" | "accurate";
   audioFile?: File | null;
   youtubeUrl?: string | null;
+  startSeconds?: number;
+  endSeconds?: number;
 }) {
   const query = new URLSearchParams({
     outputType: params.outputType,
@@ -53,6 +55,12 @@ export async function createJob(params: {
     capo: String(params.capo),
     quality: params.quality,
   });
+  if (Number.isFinite(params.startSeconds)) {
+    query.set("startSeconds", String(params.startSeconds));
+  }
+  if (Number.isFinite(params.endSeconds)) {
+    query.set("endSeconds", String(params.endSeconds));
+  }
 
   if (params.audioFile) {
     const formData = new FormData();

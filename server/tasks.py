@@ -1,7 +1,7 @@
 import json
 import os
 import shutil
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 

@@ -13,7 +13,7 @@ services:
     environment:
       - TABSERVER_REDIS_URL=${TABSERVER_REDIS_URL:-redis://redis:6379/0}
       - TABSERVER_PUBLIC_URL=${TABSERVER_PUBLIC_URL:-http://localhost:8000}
-      - TABSERVER_MSCORE=${TABSERVER_MSCORE:-mscore}
+      - TABSERVER_MSCORE=musescore3
       - TABSERVER_DB_URL=${TABSERVER_DB_URL:-sqlite:////app/server/data/tabscore.db}
       - TABSERVER_DATA_DIR=${TABSERVER_DATA_DIR:-/app/server/data}
     volumes:
@@ -30,7 +30,7 @@ services:
     command: ["python", "-m", "server.worker"]
     environment:
       - TABSERVER_REDIS_URL=${TABSERVER_REDIS_URL:-redis://redis:6379/0}
-      - TABSERVER_MSCORE=${TABSERVER_MSCORE:-mscore}
+      - TABSERVER_MSCORE=musescore3
       - TABSERVER_DB_URL=${TABSERVER_DB_URL:-sqlite:////app/server/data/tabscore.db}
       - TABSERVER_DATA_DIR=${TABSERVER_DATA_DIR:-/app/server/data}
     volumes:

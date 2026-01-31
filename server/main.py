@@ -6,6 +6,7 @@ from typing import Optional
 
 import redis
 from fastapi import Body, FastAPI, File, UploadFile, Query, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .config import SETTINGS
@@ -26,6 +27,13 @@ from .tasks import process_job
 from .utils import ensure_dir, get_job_logger
 
 app = FastAPI(title="TabScore Backend")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 install_auth_middleware(app)
 
 ensure_dir(SETTINGS.data_dir)

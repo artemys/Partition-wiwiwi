@@ -21,8 +21,10 @@ const formSchema = z
     youtubeUrl: z.string().trim().optional().or(z.literal("")),
     outputType: z.enum(["tab", "score", "both"]),
     tuning: z.string().trim().min(1, "Tuning requis."),
-    capo: z.coerce.number().min(0).max(12),
+    capo: z.number().min(0).max(12),
     quality: z.enum(["fast", "accurate"]),
+    startSeconds: z.number().int().min(0).max(12 * 60).optional(),
+    endSeconds: z.number().int().min(0).max(12 * 60).optional(),
   })
   .superRefine((data, ctx) => {
     const hasFile = Boolean(data.audioFile);
@@ -48,6 +50,13 @@ const formSchema = z
         path: ["youtubeUrl"],
       });
     }
+    if (data.startSeconds != null && data.endSeconds != null && data.endSeconds <= data.startSeconds) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Le temps de fin doit être supérieur au temps de début.",
+        path: ["endSeconds"],
+      });
+    }
   });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -68,6 +77,8 @@ export default function NewTranscriptionPage() {
       quality: "fast",
       youtubeUrl: "",
       audioFile: null,
+      startSeconds: undefined,
+      endSeconds: undefined,
     },
   });
 
@@ -80,6 +91,8 @@ export default function NewTranscriptionPage() {
         quality: values.quality,
         audioFile: values.audioFile,
         youtubeUrl: values.youtubeUrl || null,
+        startSeconds: values.startSeconds,
+        endSeconds: values.endSeconds,
       });
       toast.success("Job lancé.");
       router.push(`/jobs/${response.jobId}`);
@@ -140,7 +153,13 @@ export default function NewTranscriptionPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="capo">Capo</Label>
-              <Input id="capo" type="number" min={0} max={12} {...register("capo")} />
+              <Input
+                id="capo"
+                type="number"
+                min={0}
+                max={12}
+                {...register("capo", { valueAsNumber: true })}
+              />
             </div>
             <div className="space-y-2">
               <Label htmlFor="quality">Qualité</Label>
@@ -148,6 +167,41 @@ export default function NewTranscriptionPage() {
                 <option value="fast">Rapide</option>
                 <option value="accurate">Précis</option>
               </Select>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="startSeconds">Début (secondes)</Label>
+              <Input
+                id="startSeconds"
+                type="number"
+                min={0}
+                max={12 * 60}
+                placeholder="0"
+                {...register("startSeconds", {
+                  setValueAs: (value) => (value === "" ? undefined : Number(value)),
+                })}
+              />
+              {errors.startSeconds && (
+                <p className="text-xs text-red-600 dark:text-red-300">{errors.startSeconds.message}</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="endSeconds">Fin (secondes)</Label>
+              <Input
+                id="endSeconds"
+                type="number"
+                min={0}
+                max={12 * 60}
+                placeholder="120"
+                {...register("endSeconds", {
+                  setValueAs: (value) => (value === "" ? undefined : Number(value)),
+                })}
+              />
+              {errors.endSeconds && (
+                <p className="text-xs text-red-600 dark:text-red-300">{errors.endSeconds.message}</p>
+              )}
             </div>
           </div>
 

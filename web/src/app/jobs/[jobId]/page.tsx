@@ -16,6 +16,7 @@ export default function JobDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const jobId = Array.isArray(params.jobId) ? params.jobId[0] : params.jobId;
+  const resolvedJobId = typeof jobId === "string" ? jobId : "";
   const [tabPreview, setTabPreview] = useState<string | null>(null);
 
   const {
@@ -23,23 +24,24 @@ export default function JobDetailsPage() {
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["job", jobId],
-    queryFn: () => getJobStatus(jobId),
-    enabled: Boolean(jobId),
-    refetchInterval: (data) => {
+    queryKey: ["job", resolvedJobId],
+    queryFn: () => getJobStatus(resolvedJobId),
+    enabled: Boolean(resolvedJobId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
       if (!data) return 2000;
       return data.status === "DONE" || data.status === "FAILED" ? false : 2000;
     },
   });
 
   const { data: result } = useQuery({
-    queryKey: ["job-result", jobId],
-    queryFn: () => getJobResult(jobId),
-    enabled: status?.status === "DONE",
+    queryKey: ["job-result", resolvedJobId],
+    queryFn: () => getJobResult(resolvedJobId),
+    enabled: status?.status === "DONE" && Boolean(resolvedJobId),
   });
 
   const deleteMutation = useMutation({
-    mutationFn: () => deleteJob(jobId),
+    mutationFn: () => deleteJob(resolvedJobId),
     onSuccess: () => {
       toast.success("Transcription supprimée.");
       router.push("/library");
@@ -83,7 +85,7 @@ export default function JobDetailsPage() {
     };
   }, [result?.tabTxtUrl]);
 
-  if (!jobId) {
+  if (!resolvedJobId) {
     return <Card>Job introuvable.</Card>;
   }
 
@@ -107,7 +109,7 @@ export default function JobDetailsPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">Détails du job</h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">ID: {jobId}</p>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">ID: {resolvedJobId}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => router.push("/library")}>
@@ -160,12 +162,20 @@ export default function JobDetailsPage() {
               <Button onClick={() => window.open(downloadUrl, "_blank", "noopener,noreferrer")}>Télécharger</Button>
             )}
             {result?.tabTxtUrl && (
-              <Button variant="secondary" onClick={() => window.open(result.tabTxtUrl, "_blank", "noopener,noreferrer")}>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  window.open(result.tabTxtUrl ?? undefined, "_blank", "noopener,noreferrer")
+                }
+              >
                 Ouvrir TAB
               </Button>
             )}
             {result?.pdfUrl && (
-              <Button variant="secondary" onClick={() => window.open(result.pdfUrl, "_blank", "noopener,noreferrer")}>
+              <Button
+                variant="secondary"
+                onClick={() => window.open(result.pdfUrl ?? undefined, "_blank", "noopener,noreferrer")}
+              >
                 Ouvrir PDF
               </Button>
             )}

@@ -9,7 +9,7 @@ Génération réelle de tablatures à partir d’audio ou de liens YouTube.
 - Redis (local ou Docker)
 - yt-dlp (pour YouTube)
 - demucs + basic-pitch
-- MuseScore CLI (mscore) pour le rendu PDF
+- MuseScore CLI (mscore / musescore3) pour le rendu PDF
 
 ## Docker
 

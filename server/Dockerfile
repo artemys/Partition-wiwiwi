@@ -12,11 +12,13 @@ COPY server/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY server /app/server
+COPY torchcodec /app/torchcodec
 
 ENV TABSERVER_DATA_DIR=/app/server/data \
     TABSERVER_DB_URL=sqlite:////app/server/data/tabscore.db \
     TABSERVER_REDIS_URL=redis://redis:6379/0 \
-    TABSERVER_PUBLIC_URL=http://localhost:8000
+    TABSERVER_PUBLIC_URL=http://localhost:8000 \
+    PYTHONPATH=/app:/app/torchcodec
 
 EXPOSE 8000
 
