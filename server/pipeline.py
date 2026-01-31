@@ -252,13 +252,13 @@ def load_midi_notes(midi_path: str) -> Tuple[List[NoteEvent], Optional[float]]:
 def post_process_notes(
     notes: List[NoteEvent],
     quality: str,
-    tempo_bpm: float,
+    tempo_bpm: Optional[float],
 ) -> Tuple[List[NoteEvent], Dict[str, float]]:
     if not notes:
         return [], {"short_ratio": 1.0, "out_of_range_ratio": 1.0}
     quality = quality.lower()
     subdiv = 2 if quality == "fast" else 4
-    tempo_value = tempo_bpm if tempo_bpm else SETTINGS.default_tempo_bpm
+    tempo_value = float(tempo_bpm) if tempo_bpm and tempo_bpm > 0 else SETTINGS.default_tempo_bpm
     seconds_per_beat = 60.0 / tempo_value if tempo_value else 0.0
     grid = seconds_per_beat / subdiv
     min_duration = 0.1 if quality == "fast" else 0.05
@@ -603,20 +603,20 @@ def build_tab_json(
 
 
 def build_score_json(
-    notes: List[NoteEvent],
+    note_events: List[NoteEvent],
     quality: str,
     tempo_bpm: float,
     tempo_source: str,
+    warnings: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, object], int]:
     divisions = DEFAULT_DIVISIONS
     seconds_per_beat = _seconds_per_beat(tempo_bpm)
-    written_shift = _determine_written_octave_shift(notes)
+    written_shift = _determine_written_octave_shift(note_events)
 
     def serialize(note: NoteEvent) -> Dict[str, int]:
-        notated = int(clamp(note.pitch + written_shift, 0, 127))
-        return {"midiPitch": notated}
+        return {"midi": note.pitch}
 
-    sorted_notes = sorted(notes, key=lambda note: note.start)
+    sorted_notes = sorted(note_events, key=lambda note: note.start)
     events = _build_measure_events(
         sorted_notes,
         lambda note: note.start,
@@ -636,10 +636,12 @@ def build_score_json(
         "quality": quality,
         "scoreWrittenOctaveShift": written_shift,
     }
-    score_json = {
+    score_json: Dict[str, object] = {
         "metadata": metadata,
         "measures": measures,
     }
+    if warnings:
+        score_json["warnings"] = list(warnings)
     return score_json, total_notes
 
 
@@ -741,7 +743,7 @@ def write_tab_outputs(
     logger=None,
     measures_per_system: int = 2,
     pretty_export: bool = False,
-) -> Tuple[Dict[str, object], int, List[str]]:
+) -> Tuple[Dict[str, object], int, List[str], int]:
     tab_json, total_notes = build_tab_json(tab_notes, tuning, capo, quality, tempo_bpm, tempo_source, warnings)
     if total_notes == 0:
         raise RuntimeError("Aucune tablature générée (pas de notes exploitables).")
@@ -772,7 +774,7 @@ def write_tab_outputs(
         if logger:
             logger.warning(warning)
 
-    return tab_json, tab_txt_notes, output_warnings
+    return tab_json, tab_txt_notes, output_warnings, total_notes
 
 
 def load_tab_json(path: str) -> Dict[str, object]:
@@ -1056,28 +1058,37 @@ def write_tab_musicxml(
         tree.write(f, encoding="utf-8")
     tab_count, xml_count, diff_report = compare_tab_json_and_musicxml(tab_json, output_path)
     if diff_report:
-        warning = (
-            "Mismatch entre tab.json et MusicXML: "
-            f"{len(diff_report)} différences (exemple {diff_report[:3]})."
-        )
+        diff_path = os.path.join(os.path.dirname(output_path), "diff_report_tab.txt")
+        with open(diff_path, "w", encoding="utf-8") as diff_file:
+            diff_file.write(f"Notes tab.json : {tab_count}\n")
+            diff_file.write(f"Notes tab MusicXML : {xml_count}\n")
+            diff_file.write("Différences tab/musical:\n")
+            for diff in diff_report:
+                diff_file.write(
+                    f"Mesure {diff.get('measure')} corde {diff.get('string')} frette {diff.get('fret')}: "
+                    f"{diff.get('countTabJson')} vs {diff.get('countMusicXML')}\n"
+                )
+        message = f"Mismatch entre tab.json ({tab_count}) et MusicXML ({xml_count})."
         if logger:
-            logger.warning(warning)
+            logger.error("%s (voir %s)", message, diff_path)
         else:
-            print(warning)
+            print(message)
+        raise RuntimeError(message)
     return tab_count, xml_count, diff_report
 
 
 def write_score_musicxml(
     score_json: Dict[str, Any],
+    tempo_bpm: float,
     title: str,
     artist: str,
     annotations: Optional[List[Dict[str, str]]],
     output_path: str,
+    guitar_notation: bool = True,
     logger=None,
 ) -> Tuple[int, int]:
     metadata = score_json.get("metadata", {})
     divisions = int(metadata.get("divisions", DEFAULT_DIVISIONS) or DEFAULT_DIVISIONS)
-    tempo_bpm = float(metadata.get("tempo") or 0)
     time_sig = metadata.get("timeSignature", DEFAULT_TIME_SIGNATURE)
     written_shift = int(metadata.get("scoreWrittenOctaveShift", GUITAR_WRITTEN_SHIFT))
     try:
@@ -1117,7 +1128,6 @@ def write_score_musicxml(
     section_labels = ["A", "B", "C", "D", "E"]
     measures = score_json.get("measures", [])
     measure_count = max(len(measures), 1)
-    transpose_value = -written_shift
     score_note_count = sum(len(event["notes"]) for measure in measures for event in measure["events"])
     xml_note_count = 0
 
@@ -1131,15 +1141,11 @@ def write_score_musicxml(
             time = ET.SubElement(attributes, "time")
             ET.SubElement(time, "beats").text = str(beats)
             ET.SubElement(time, "beat-type").text = str(beat_type)
-            transpose = ET.SubElement(attributes, "transpose")
-            ET.SubElement(transpose, "chromatic").text = str(transpose_value)
-            ET.SubElement(transpose, "diatonic").text = "0"
-            clef = ET.SubElement(attributes, "clef")
-            ET.SubElement(clef, "sign").text = "G"
-            ET.SubElement(clef, "line").text = "2"
-            ET.SubElement(clef, "clef-octave-change").text = "-1"
-            staff_details = ET.SubElement(attributes, "staff-details")
-            ET.SubElement(staff_details, "staff-lines").text = "5"
+            if guitar_notation:
+                clef = ET.SubElement(attributes, "clef")
+                ET.SubElement(clef, "sign").text = "G"
+                ET.SubElement(clef, "line").text = "2"
+                ET.SubElement(clef, "clef-octave-change").text = "-1"
             direction = ET.SubElement(measure, "direction", placement="above")
             direction_type = ET.SubElement(direction, "direction-type")
             metronome = ET.SubElement(direction_type, "metronome")
@@ -1179,8 +1185,9 @@ def write_score_musicxml(
                 note_el = ET.SubElement(measure, "note")
                 if n_idx > 0:
                     ET.SubElement(note_el, "chord")
-                midi_value = int(note_data.get("midiPitch", 0))
-                step, alter, octave = _midi_to_pitch(midi_value)
+                midi_value = int(note_data.get("midi", 0))
+                written_midi = int(clamp(midi_value + written_shift, 0, 127))
+                step, alter, octave = _midi_to_pitch(written_midi)
                 pitch_el = ET.SubElement(note_el, "pitch")
                 ET.SubElement(pitch_el, "step").text = step
                 if alter:
@@ -1211,9 +1218,13 @@ def write_score_musicxml(
         tree.write(f, encoding="utf-8")
 
     if score_note_count != xml_note_count:
+        diff_path = os.path.join(os.path.dirname(output_path), "diff_report_score.txt")
+        with open(diff_path, "w", encoding="utf-8") as diff_file:
+            diff_file.write(f"Notes score.json : {score_note_count}\n")
+            diff_file.write(f"Notes score MusicXML : {xml_note_count}\n")
         message = f"Mismatch entre score.json ({score_note_count}) et MusicXML ({xml_note_count})."
         if logger:
-            logger.error(message)
+            logger.error("%s (voir %s)", message, diff_path)
         else:
             print(message)
         raise RuntimeError(message)

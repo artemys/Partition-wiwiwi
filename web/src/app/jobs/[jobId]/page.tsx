@@ -238,6 +238,26 @@ export default function JobDetailsPage() {
   const formatBytes = (value?: number | null) =>
     value != null ? `${value.toLocaleString("fr-FR")} octets` : "—";
   const formatCount = (value?: number | null) => (value != null ? value.toString() : "—");
+  const formatDecimal = (value?: number | null) =>
+    value != null ? value.toLocaleString("fr-FR", { maximumFractionDigits: 2 }) : "—";
+  const formatSigned = (value?: number | null) =>
+    value != null ? `${value >= 0 ? "+" : ""}${value}` : "—";
+
+  const handleCopyDebug = async () => {
+    if (!debugInfo) {
+      return;
+    }
+    if (!navigator?.clipboard) {
+      toast.error("Copie impossible (clipboard absent).");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(debugInfo, null, 2));
+      toast.success("Infos debug copiées.");
+    } catch {
+      toast.error("Impossible de copier les infos debug.");
+    }
+  };
 
   useEffect(() => {
     const tabUrl = result?.tabTxtUrl;
@@ -397,74 +417,132 @@ export default function JobDetailsPage() {
               />
             </div>
           </div>
-          <Card className="space-y-3">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Info debug</h2>
-            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
-              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF TAB</p>
-              <div className="flex justify-between">
-                <span>URL</span>
-                <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
-                  {result?.tabPdfUrl ?? "—"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>Status HTTP</span>
-                <span>{tabPdfPreview.fetchInfo?.status ?? "—"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Content-Type</span>
-                <span>{tabPdfPreview.fetchInfo?.contentType ?? "—"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Content-Length</span>
-                <span>{formatBytes(tabPdfPreview.fetchInfo?.contentLength)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Erreur</span>
-                <span>{tabPdfPreview.error ?? "—"}</span>
-              </div>
+          <Card className="space-y-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Debug (dev)</h2>
+              <Button variant="ghost" disabled={!debugInfo} onClick={handleCopyDebug}>
+                Copier debug
+              </Button>
             </div>
-            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
-              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF PARTITION</p>
-              <div className="flex justify-between">
-                <span>URL</span>
-                <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
-                  {result?.scorePdfUrl ?? "—"}
-                </span>
+            <div className="space-y-3 text-sm text-zinc-600 dark:text-zinc-300">
+              <div className="space-y-2">
+                <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF TAB</p>
+                <div className="flex justify-between">
+                  <span>URL</span>
+                  <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
+                    {result?.tabPdfUrl ?? "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Status HTTP</span>
+                  <span>{tabPdfPreview.fetchInfo?.status ?? "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Content-Type</span>
+                  <span>{tabPdfPreview.fetchInfo?.contentType ?? "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Content-Length</span>
+                  <span>{formatBytes(tabPdfPreview.fetchInfo?.contentLength)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Erreur</span>
+                  <span>{tabPdfPreview.error ?? "—"}</span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span>Status HTTP</span>
-                <span>{scorePdfPreview.fetchInfo?.status ?? "—"}</span>
+              <div className="space-y-2">
+                <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">PDF PARTITION</p>
+                <div className="flex justify-between">
+                  <span>URL</span>
+                  <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
+                    {result?.scorePdfUrl ?? "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Status HTTP</span>
+                  <span>{scorePdfPreview.fetchInfo?.status ?? "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Content-Type</span>
+                  <span>{scorePdfPreview.fetchInfo?.contentType ?? "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Content-Length</span>
+                  <span>{formatBytes(scorePdfPreview.fetchInfo?.contentLength)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Erreur</span>
+                  <span>{scorePdfPreview.error ?? "—"}</span>
+                </div>
               </div>
-              <div className="flex justify-between">
-                <span>Content-Type</span>
-                <span>{scorePdfPreview.fetchInfo?.contentType ?? "—"}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Content-Length</span>
-                <span>{formatBytes(scorePdfPreview.fetchInfo?.contentLength)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Erreur</span>
-                <span>{scorePdfPreview.error ?? "—"}</span>
-              </div>
-            </div>
-            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
               {isDebugLoading && <p>Chargement des informations de debug…</p>}
               {isDebugError && <p>Impossible de charger les infos de debug.</p>}
               {debugInfo && (
-                <div className="space-y-2 rounded-xl border border-zinc-200 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
-                  <div>
-                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Chemins réels</p>
-                    <p className="font-mono break-all">PDF: {debugInfo.paths.pdf ?? "—"}</p>
-                    <p className="font-mono break-all">MusicXML: {debugInfo.paths.musicxml ?? "—"}</p>
-                    <p className="font-mono break-all">TAB: {debugInfo.paths.tabTxt ?? "—"}</p>
+                <div className="space-y-4 rounded-xl border border-zinc-200 bg-white/60 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-200">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Tempo</p>
+                      <p>
+                        BPM détecté: <span className="font-mono">{formatDecimal(debugInfo.midiBpmDetected)}</span>
+                      </p>
+                      <p>
+                        Tempo utilisé:{" "}
+                        <span className="font-mono">{formatDecimal(debugInfo.tempoUsedForQuantization)}</span>
+                      </p>
+                      <p>
+                        Source: <span className="font-mono">{debugInfo.tempoSource ?? "—"}</span>
+                      </p>
+                      <p>
+                        Divisions: <span className="font-mono">{formatCount(debugInfo.divisions)}</span>
+                      </p>
+                      <p>
+                        Mesure en ticks: <span className="font-mono">{formatCount(debugInfo.measureTicks)}</span>
+                      </p>
+                      <p>
+                        Déflexion octave:{" "}
+                        <span className="font-mono">{formatSigned(debugInfo.scoreWrittenOctaveShift)}</span>
+                      </p>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Comptes</p>
+                      <p>
+                        Events musicaux: <span className="font-mono">{formatCount(debugInfo.noteEventsCount)}</span>
+                      </p>
+                      <p>
+                        Notes score.json:{" "}
+                        <span className="font-mono">{formatCount(debugInfo.scoreJsonNotesCount)}</span>
+                      </p>
+                      <p>
+                        Notes tab.json: <span className="font-mono">{formatCount(debugInfo.tabJsonNotesCount)}</span>
+                      </p>
+                      <p>
+                        Notes score MusicXML:{" "}
+                        <span className="font-mono">{formatCount(debugInfo.scoreMusicXmlNotesCount)}</span>
+                      </p>
+                      <p>
+                        Notes tab MusicXML:{" "}
+                        <span className="font-mono">{formatCount(debugInfo.tabMusicXmlNotesCount)}</span>
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Tailles</p>
-                    <p>PDF: {formatBytes(debugInfo.sizes.pdf)}</p>
-                    <p>MusicXML: {formatBytes(debugInfo.sizes.musicxml)}</p>
-                    <p>TAB: {formatBytes(debugInfo.sizes.tabTxt)}</p>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Chemins réels</p>
+                      <p className="font-mono break-all">PDF: {debugInfo.paths.pdf ?? "—"}</p>
+                      <p className="font-mono break-all">MusicXML: {debugInfo.paths.musicxml ?? "—"}</p>
+                      <p className="font-mono break-all">TAB: {debugInfo.paths.tabTxt ?? "—"}</p>
+                      <p className="font-mono break-all">Score JSON: {debugInfo.paths.scoreJson ?? "—"}</p>
+                      <p className="font-mono break-all">Score MusicXML: {debugInfo.paths.scoreMusicxml ?? "—"}</p>
+                      <p className="font-mono break-all">Logs: {debugInfo.paths.logs ?? "—"}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Tailles</p>
+                      <p>PDF: {formatBytes(debugInfo.sizes.pdf)}</p>
+                      <p>MusicXML: {formatBytes(debugInfo.sizes.musicxml)}</p>
+                      <p>TAB: {formatBytes(debugInfo.sizes.tabTxt)}</p>
+                      <p>Score MusicXML: {formatBytes(debugInfo.sizes.scoreMusicxml)}</p>
+                      <p>Score PDF: {formatBytes(debugInfo.sizes.scorePdf)}</p>
+                    </div>
                   </div>
                   {debugInfo.lastMuseScore && (
                     <div>
@@ -484,19 +562,6 @@ export default function JobDetailsPage() {
                       )}
                     </div>
                   )}
-                  <div>
-                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Statistiques</p>
-                    <p className="text-xs">
-                      Notes tab.json : <span className="font-mono">{formatCount(debugInfo.totalNotesTabJson)}</span>
-                    </p>
-                    <p className="text-xs">
-                      Notes MusicXML :{" "}
-                      <span className="font-mono">{formatCount(debugInfo.totalNotesMusicXML)}</span>
-                    </p>
-                    <p className="text-xs">
-                      Notes TAB : <span className="font-mono">{formatCount(debugInfo.totalNotesTabTxt)}</span>
-                    </p>
-                  </div>
                   {debugInfo.diffReport && debugInfo.diffReport.length > 0 && (
                     <div className="space-y-1 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
                       <p className="text-[10px] uppercase text-red-500 dark:text-red-400">Diff MusicXML</p>

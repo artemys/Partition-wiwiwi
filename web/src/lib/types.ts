@@ -42,6 +42,9 @@ export type JobDebugResponse = {
     musicxml?: string | null;
     tabTxt?: string | null;
     tabJson?: string | null;
+    scoreJson?: string | null;
+    scoreMusicxml?: string | null;
+    scorePdf?: string | null;
     logs?: string | null;
   };
   sizes: {
@@ -49,6 +52,8 @@ export type JobDebugResponse = {
     musicxml?: number | null;
     tabTxt?: number | null;
     tabJson?: number | null;
+    scoreMusicxml?: number | null;
+    scorePdf?: number | null;
   };
   lastMuseScore?: {
     command: string;
@@ -65,4 +70,15 @@ export type JobDebugResponse = {
     countTabJson?: number | null;
     countMusicXML?: number | null;
   }>;
+  midiBpmDetected?: number | null;
+  tempoUsedForQuantization?: number | null;
+  tempoSource?: string | null;
+  divisions?: number | null;
+  measureTicks?: number | null;
+  scoreWrittenOctaveShift?: number | null;
+  noteEventsCount?: number | null;
+  scoreJsonNotesCount?: number | null;
+  tabJsonNotesCount?: number | null;
+  scoreMusicXmlNotesCount?: number | null;
+  tabMusicXmlNotesCount?: number | null;
 };

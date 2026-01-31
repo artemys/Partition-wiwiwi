@@ -45,3 +45,4 @@ class Job(Base):
     score_pdf_path = Column(Text, nullable=True)
     midi_path = Column(Text, nullable=True)
     logs_path = Column(Text, nullable=True)
+    debug_info_json = Column(Text, nullable=True)

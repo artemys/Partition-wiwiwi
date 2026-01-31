@@ -313,6 +313,7 @@ def get_job_debug(job_id: str):
             )
         except Exception as exc:
             diff_report = [{"error": str(exc)}]
+    debug_info = json.loads(job.debug_info_json or "{}")
     db.close()
     return {
         "paths": debug_paths,
@@ -322,6 +323,17 @@ def get_job_debug(job_id: str):
         "totalNotesMusicXML": musicxml_count,
         "totalNotesTabTxt": tab_json_count,
         "diffReport": diff_report,
+        "midiBpmDetected": debug_info.get("midiBpmDetected"),
+        "tempoUsedForQuantization": debug_info.get("tempoUsedForQuantization"),
+        "tempoSource": debug_info.get("tempoSource"),
+        "divisions": debug_info.get("divisions"),
+        "measureTicks": debug_info.get("measureTicks"),
+        "scoreWrittenOctaveShift": debug_info.get("scoreWrittenOctaveShift"),
+        "noteEventsCount": debug_info.get("noteEventsCount"),
+        "scoreJsonNotesCount": debug_info.get("scoreJsonNotesCount"),
+        "tabJsonNotesCount": debug_info.get("tabJsonNotesCount"),
+        "scoreMusicXmlNotesCount": debug_info.get("scoreMusicXmlNotesCount"),
+        "tabMusicXmlNotesCount": debug_info.get("tabMusicXmlNotesCount"),
     }
 
 

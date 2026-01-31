@@ -32,3 +32,5 @@ def init_db() -> None:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN score_musicxml_path TEXT"))
             if "score_pdf_path" not in existing:
                 conn.execute(text("ALTER TABLE jobs ADD COLUMN score_pdf_path TEXT"))
+            if "debug_info_json" not in existing:
+                conn.execute(text("ALTER TABLE jobs ADD COLUMN debug_info_json TEXT"))
