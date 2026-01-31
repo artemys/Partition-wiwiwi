@@ -29,7 +29,7 @@ const formSchema = z
     tuning: z.string().trim().min(1, "Tuning requis."),
     capo: z.number().min(0).max(12),
     quality: z.enum(["fast", "accurate"]),
-    transcriptionMode: z.enum(["monophonic_tuner", "polyphonic_basic_pitch"]),
+    transcriptionMode: z.enum(["best_free", "monophonic_tuner", "polyphonic_basic_pitch"]),
     startSeconds: z.number().int().min(0).max(12 * 60).optional(),
     endSeconds: z.number().int().min(0).max(12 * 60).optional(),
   })
@@ -82,7 +82,7 @@ export default function NewTranscriptionPage() {
       tuning: "EADGBE",
       capo: 0,
       quality: "fast",
-      transcriptionMode: "polyphonic_basic_pitch",
+      transcriptionMode: "best_free",
       youtubeUrl: "",
       audioFile: null,
       startSeconds: undefined,
@@ -191,11 +191,12 @@ export default function NewTranscriptionPage() {
           <div className="space-y-2">
             <Label htmlFor="transcriptionMode">Mode automatique</Label>
             <Select id="transcriptionMode" {...register("transcriptionMode")}>
+              <option value="best_free">Recommandé — best_free (Demucs + Basic Pitch)</option>
               <option value="monophonic_tuner">Auto (type accordeur) — riffs/lead</option>
               <option value="polyphonic_basic_pitch">Auto (polyphonique) — accords</option>
             </Select>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              Le mode accordeur suit une seule ligne mélodique, le mode polyphonique vise les accords.
+              “best_free” isole mieux la guitare et vise une partition + tablature plus cohérentes.
             </p>
           </div>
 

@@ -116,7 +116,7 @@ async def create_job(
     tuning: str = Query("EADGBE"),
     capo: int = Query(0),
     quality: str = Query("fast"),
-    transcriptionMode: str = Query("polyphonic_basic_pitch"),
+    transcriptionMode: str = Query("best_free"),
     mode: Optional[str] = Query(None),
     target: str = Query("GUITAR_BEST_EFFORT"),
     handSpan: int = Query(4),
@@ -131,10 +131,10 @@ async def create_job(
     output_type = outputType.lower()
     quality = quality.lower()
     transcription_mode = transcriptionMode.lower()
-    if transcription_mode not in ("monophonic_tuner", "polyphonic_basic_pitch"):
+    if transcription_mode not in ("monophonic_tuner", "polyphonic_basic_pitch", "best_free"):
         raise HTTPException(
             status_code=400,
-            detail="transcriptionMode doit être 'monophonic_tuner' ou 'polyphonic_basic_pitch'.",
+            detail="transcriptionMode doit être 'monophonic_tuner', 'polyphonic_basic_pitch' ou 'best_free'.",
         )
     if output_type not in ("tab", "score", "both"):
         raise HTTPException(status_code=400, detail="outputType doit être tab, score ou both.")
@@ -294,7 +294,11 @@ def get_job_debug(job_id: str):
         except OSError:
             return None
 
+    output_dir = os.path.join(SETTINGS.data_dir, job_id, "output")
     debug_json_path = os.path.join(SETTINGS.data_dir, job_id, "debug.json")
+    stem_guitar_path = os.path.join(output_dir, "stem_guitar.wav")
+    raw_basic_pitch_path = os.path.join(output_dir, "raw_basic_pitch.json")
+    clean_notes_path = os.path.join(output_dir, "clean_notes.json")
     debug_paths = {
         "pdf": _absolute(job.pdf_path),
         "musicxml": _absolute(job.musicxml_path),
@@ -305,6 +309,9 @@ def get_job_debug(job_id: str):
         "scorePdf": _absolute(job.score_pdf_path),
         "logs": _absolute(job.logs_path),
         "debugJson": _absolute(debug_json_path) if os.path.exists(debug_json_path) else None,
+        "stemGuitarWav": _absolute(stem_guitar_path) if os.path.exists(stem_guitar_path) else None,
+        "rawBasicPitchJson": _absolute(raw_basic_pitch_path) if os.path.exists(raw_basic_pitch_path) else None,
+        "cleanNotesJson": _absolute(clean_notes_path) if os.path.exists(clean_notes_path) else None,
     }
     debug_sizes = {
         "pdf": _size(job.pdf_path),
@@ -315,6 +322,9 @@ def get_job_debug(job_id: str):
         "scoreMusicxml": _size(job.score_musicxml_path),
         "scorePdf": _size(job.score_pdf_path),
         "debugJson": _size(debug_json_path),
+        "stemGuitarWav": _size(stem_guitar_path),
+        "rawBasicPitchJson": _size(raw_basic_pitch_path),
+        "cleanNotesJson": _size(clean_notes_path),
     }
     last_musescore = parse_last_musescore_run(job.logs_path) if job.logs_path else None
     tab_json_count = None
@@ -370,6 +380,16 @@ def get_job_debug(job_id: str):
             if job.fingering_debug_path
             else None
         ),
+        "stemUsed": debug_info.get("stemUsed"),
+        "stemPreprocess": debug_info.get("stemPreprocess"),
+        "basicPitchNotesCountRaw": debug_info.get("basicPitchNotesCountRaw"),
+        "basicPitchNotesCountAfterFilter": debug_info.get("basicPitchNotesCountAfterFilter"),
+        "basicPitchNotesCountAfterMerge": debug_info.get("basicPitchNotesCountAfterMerge"),
+        "basicPitchNotesCountAfterHarmonics": debug_info.get("basicPitchNotesCountAfterHarmonics"),
+        "basicPitchNotesCountAfterLead": debug_info.get("basicPitchNotesCountAfterLead"),
+        "basicPitchNotesCountQuantized": debug_info.get("basicPitchNotesCountQuantized"),
+        "quantizationGridTicks": debug_info.get("quantizationGridTicks"),
+        "quantizationDivisions": debug_info.get("quantizationDivisions"),
     }
 
 
@@ -394,6 +414,14 @@ def download_file(job_id: str, file_name: str):
         "output.mid": job.midi_path,
         "fingering_debug.json": job.fingering_debug_path,
     }
+    output_dir = os.path.join(SETTINGS.data_dir, job_id, "output")
+    path_map.update(
+        {
+            "stem_guitar.wav": os.path.join(output_dir, "stem_guitar.wav"),
+            "raw_basic_pitch.json": os.path.join(output_dir, "raw_basic_pitch.json"),
+            "clean_notes.json": os.path.join(output_dir, "clean_notes.json"),
+        }
+    )
     target = path_map.get(file_name)
     db.close()
     if not target or not os.path.exists(target):
@@ -407,6 +435,8 @@ def download_file(job_id: str, file_name: str):
         media_type = "application/xml"
     elif file_name.endswith(".mid"):
         media_type = "audio/midi"
+    elif file_name.endswith(".wav"):
+        media_type = "audio/wav"
     elif file_name.endswith(".pdf"):
         media_type = "application/pdf"
         safe_name = os.path.basename(file_name)

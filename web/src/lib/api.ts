@@ -44,7 +44,7 @@ export async function createJob(params: {
   tuning: string;
   capo: number;
   quality: "fast" | "accurate";
-  transcriptionMode?: "monophonic_tuner" | "polyphonic_basic_pitch";
+  transcriptionMode?: "best_free" | "monophonic_tuner" | "polyphonic_basic_pitch";
   audioFile?: File | null;
   youtubeUrl?: string | null;
   startSeconds?: number;
@@ -58,7 +58,7 @@ export async function createJob(params: {
     capo: String(params.capo),
     quality: params.quality,
   });
-  const transcriptionMode = params.transcriptionMode ?? "polyphonic_basic_pitch";
+  const transcriptionMode = params.transcriptionMode ?? "best_free";
   query.set("transcriptionMode", transcriptionMode);
   if (Number.isFinite(params.handSpan ?? NaN)) {
     query.set("handSpan", String(params.handSpan));

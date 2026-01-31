@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 import mido
 import numpy as np
 from scipy.signal import butter, lfilter
+from scipy.io import wavfile
 
 from .config import SETTINGS
 from .utils import clamp, run_cmd, read_json, write_json
@@ -100,6 +101,28 @@ def _butter_lowpass(cutoff: float, sr: int, order: int = 4) -> Tuple[np.ndarray,
     return butter(order, value, btype="low")
 
 
+def _butter_highpass(cutoff: float, sr: int, order: int = 4) -> Tuple[np.ndarray, np.ndarray]:
+    nyquist = 0.5 * sr
+    value = min(max(cutoff / nyquist, 1e-6), 0.999)
+    return butter(order, value, btype="high")
+
+
+def _apply_guitar_focus_filter(
+    y: np.ndarray, sr: int, hp_hz: float = 80.0, lp_hz: float = 7000.0
+) -> np.ndarray:
+    """Filtre simple 'focus guitare' (HPF + LPF)."""
+    if y.size == 0:
+        return y
+    try:
+        hp_b, hp_a = _butter_highpass(hp_hz, sr)
+        out = lfilter(hp_b, hp_a, y)
+        lp_b, lp_a = _butter_lowpass(min(lp_hz, 0.499 * sr), sr)
+        out = lfilter(lp_b, lp_a, out)
+        return out
+    except ValueError:
+        return y
+
+
 def _apply_guitar_bandpass(y: np.ndarray, sr: int) -> np.ndarray:
     """Filtre 'guitare focus'.
 
@@ -117,6 +140,78 @@ def _apply_guitar_bandpass(y: np.ndarray, sr: int) -> np.ndarray:
         return lfilter(lp_b, lp_a, filtered)
     except ValueError:
         return y
+
+
+def _rms_dbfs(y: np.ndarray) -> Optional[float]:
+    if y.size == 0:
+        return None
+    rms = float(np.sqrt(np.mean(np.square(y), dtype=np.float64)))
+    if not np.isfinite(rms) or rms <= 1e-12:
+        return None
+    return float(20.0 * np.log10(rms))
+
+
+def _target_rms_from_dbfs(dbfs: float) -> float:
+    return float(10 ** (float(dbfs) / 20.0))
+
+
+def _write_wav_mono_int16(path: str, y: np.ndarray, sr: int) -> None:
+    y = np.asarray(y, dtype=np.float32)
+    if y.size == 0:
+        wavfile.write(path, sr, np.zeros((0,), dtype=np.int16))
+        return
+    y = np.clip(y, -1.0, 1.0)
+    data = (y * 32767.0).astype(np.int16)
+    wavfile.write(path, int(sr), data)
+
+
+def preprocess_guitar_stem(
+    input_wav: str,
+    output_wav: str,
+    logger=None,
+    hp_hz: float = 80.0,
+    lp_hz: float = 7000.0,
+    target_rms_dbfs: float = -18.0,
+    apply_gate: bool = False,
+) -> Dict[str, Any]:
+    """Pré-traitement simple pour 'focus guitare'.
+
+    - HPF 80Hz
+    - LPF 7kHz
+    - normalisation RMS vers ~-18 dBFS
+    - gate léger optionnel
+    """
+    import librosa
+
+    y, sr = librosa.load(input_wav, sr=SETTINGS.sample_rate, mono=True)
+    duration = float(y.size) / float(sr) if sr else 0.0
+    rms_before = _rms_dbfs(y)
+    y_f = _apply_guitar_focus_filter(y, sr, hp_hz=hp_hz, lp_hz=lp_hz)
+    if apply_gate:
+        y_f = _apply_noise_gate(y_f, threshold=0.01)
+    y_f = _normalize_rms(y_f, target_rms=_target_rms_from_dbfs(target_rms_dbfs))
+    rms_after = _rms_dbfs(y_f)
+    _write_wav_mono_int16(output_wav, y_f, sr)
+    info = {
+        "durationSeconds": duration,
+        "sampleRate": int(sr),
+        "rmsBeforeDbfs": rms_before,
+        "rmsAfterDbfs": rms_after,
+        "highpassHz": float(hp_hz),
+        "lowpassHz": float(lp_hz),
+        "targetRmsDbfs": float(target_rms_dbfs),
+        "gateApplied": bool(apply_gate),
+    }
+    if logger:
+        logger.info(
+            "Stem preprocess: duration=%.2fs sr=%s rmsBefore=%s rmsAfter=%s gate=%s",
+            duration,
+            sr,
+            f"{rms_before:.2f}dBFS" if rms_before is not None else "n/a",
+            f"{rms_after:.2f}dBFS" if rms_after is not None else "n/a",
+            apply_gate,
+        )
+    return info
 
 
 def _apply_onset_band(y: np.ndarray, sr: int) -> np.ndarray:
@@ -526,6 +621,13 @@ def estimate_tempo(audio: np.ndarray, sr: int, logger=None) -> Tuple[float, str]
     return float(SETTINGS.default_tempo_bpm), "default"
 
 
+def estimate_tempo_from_wav(wav_path: str, logger=None) -> Tuple[float, str]:
+    import librosa
+
+    y, sr = librosa.load(wav_path, sr=SETTINGS.sample_rate, mono=True)
+    return estimate_tempo(y, sr, logger)
+
+
 @dataclass
 class _MonophonicChoice:
     event_index: int
@@ -718,6 +820,33 @@ def run_demucs(input_wav: str, output_dir: str, logger) -> str:
     return other
 
 
+def run_demucs_pick_stem(input_wav: str, output_dir: str, logger, preferred: str = "other") -> Tuple[str, str]:
+    """Lance Demucs et retourne un stem choisi (chemin + nom).
+
+    Par défaut on prend `other.wav` (souvent le plus proche 'guitare').
+    """
+    run_cmd(
+        [
+            SETTINGS.demucs_path,
+            "-n",
+            "htdemucs",
+            "-o",
+            output_dir,
+            input_wav,
+        ],
+        logger,
+        timeout_seconds=SETTINGS.subprocess_timeout_seconds,
+    )
+    basename = os.path.splitext(os.path.basename(input_wav))[0]
+    stem_dir = os.path.join(output_dir, "htdemucs", basename)
+    candidates = [preferred, "other", "drums", "bass", "vocals"]
+    for stem_name in candidates:
+        stem_path = os.path.join(stem_dir, f"{stem_name}.wav")
+        if os.path.exists(stem_path):
+            return stem_path, stem_name
+    raise RuntimeError("Demucs n'a produit aucun stem utilisable.")
+
+
 def run_basic_pitch(input_wav: str, output_dir: str, logger) -> str:
     run_cmd(
         [
@@ -732,6 +861,48 @@ def run_basic_pitch(input_wav: str, output_dir: str, logger) -> str:
         if name.endswith(".mid") or name.endswith(".midi"):
             return os.path.join(output_dir, name)
     raise RuntimeError("Basic Pitch n'a pas généré de MIDI.")
+
+
+def run_basic_pitch_notes(
+    input_wav: str,
+    output_dir: str,
+    logger=None,
+    onset_threshold: float = 0.5,
+    frame_threshold: float = 0.3,
+    minimum_note_length_ms: float = 50.0,
+    min_frequency: float = 80.0,
+    max_frequency: float = 1400.0,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Extraction Basic Pitch (API Python) avec amplitude (proxy confidence) + export MIDI."""
+    from basic_pitch.inference import predict
+
+    os.makedirs(output_dir, exist_ok=True)
+    _, midi_data, note_events = predict(
+        input_wav,
+        onset_threshold=onset_threshold,
+        frame_threshold=frame_threshold,
+        minimum_note_length=minimum_note_length_ms,
+        minimum_frequency=min_frequency,
+        maximum_frequency=max_frequency,
+        melodia_trick=True,
+    )
+    midi_path = os.path.join(output_dir, "basic_pitch.mid")
+    midi_data.write(midi_path)
+
+    raw_notes: List[Dict[str, Any]] = []
+    for start_s, end_s, pitch_midi, amplitude, _pitch_bends in note_events:
+        raw_notes.append(
+            {
+                "start": float(start_s),
+                "end": float(end_s),
+                "pitch": int(pitch_midi),
+                "amplitude": float(amplitude),
+                "confidence": float(amplitude),
+            }
+        )
+    if logger:
+        logger.info("BasicPitch notes (python): %d", len(raw_notes))
+    return raw_notes, midi_path
 
 
 def load_midi_notes(midi_path: str) -> Tuple[List[NoteEvent], Optional[float]]:
@@ -757,6 +928,174 @@ def load_midi_notes(midi_path: str) -> Tuple[List[NoteEvent], Optional[float]]:
     if tempo:
         bpm = 60_000_000 / tempo
     return events, bpm
+
+
+def post_process_basic_pitch_notes(
+    notes: List[Dict[str, Any]],
+    *,
+    confidence_threshold: float = 0.35,
+    midi_min: int = 40,
+    midi_max: int = 88,
+    merge_gap_seconds: float = 0.04,
+    min_duration_seconds: float = 0.08,
+    harmonic_window_seconds: float = 0.2,
+    harmonic_interval_semitones: int = 12,
+    lead_mode: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Nettoyage 'musical' des notes Basic Pitch (start/end/pitch/confidence)."""
+    if not notes:
+        return [], {
+            "counts": {"raw": 0, "afterFilter": 0, "afterMerge": 0, "afterHarmonics": 0, "afterLead": 0}
+        }
+
+    raw_count = len(notes)
+
+    # 3.1 Filtrage confidence + plage guitare.
+    filtered: List[Dict[str, Any]] = []
+    for n in notes:
+        try:
+            conf = float(n.get("confidence", n.get("amplitude", 0.0)) or 0.0)
+            pitch = int(n.get("pitch"))
+            start = float(n.get("start"))
+            end = float(n.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if conf < confidence_threshold:
+            continue
+        if pitch < midi_min or pitch > midi_max:
+            continue
+        if end <= start:
+            continue
+        filtered.append({"start": start, "end": end, "pitch": pitch, "confidence": conf})
+    filtered.sort(key=lambda x: (x["start"], x["pitch"]))
+    after_filter = len(filtered)
+
+    # 3.2 Fusion notes consécutives (même pitch +/-1, gap < 40ms).
+    merged: List[Dict[str, Any]] = []
+    for n in filtered:
+        if not merged:
+            merged.append(n)
+            continue
+        prev = merged[-1]
+        gap = float(n["start"]) - float(prev["end"])
+        if abs(int(n["pitch"]) - int(prev["pitch"])) <= 1 and gap >= -1e-6 and gap < merge_gap_seconds:
+            prev["end"] = max(float(prev["end"]), float(n["end"]))
+            prev["confidence"] = float(max(prev["confidence"], n["confidence"]))
+            if int(n["pitch"]) < int(prev["pitch"]):
+                prev["pitch"] = int(n["pitch"])
+        else:
+            merged.append(n)
+    after_merge = len(merged)
+
+    # 3.3 Anti-harmoniques / notes fantômes: octave courte et moins confiante.
+    kept = [True] * len(merged)
+    for i, hi in enumerate(merged):
+        if not kept[i]:
+            continue
+        hi_pitch = int(hi["pitch"])
+        hi_conf = float(hi["confidence"])
+        hi_dur = float(hi["end"]) - float(hi["start"])
+        # On cible surtout les notes courtes (parasites).
+        if hi_dur >= 0.08:
+            continue
+        for j, lo in enumerate(merged):
+            if i == j:
+                continue
+            lo_pitch = int(lo["pitch"])
+            if abs((hi_pitch - lo_pitch) - harmonic_interval_semitones) > 1:
+                continue
+            if abs(float(hi["start"]) - float(lo["start"])) > harmonic_window_seconds:
+                continue
+            overlap_start = max(float(hi["start"]), float(lo["start"]))
+            overlap_end = min(float(hi["end"]), float(lo["end"]))
+            if overlap_end <= overlap_start:
+                continue
+            lo_conf = float(lo["confidence"])
+            lo_dur = float(lo["end"]) - float(lo["start"])
+            if hi_conf < lo_conf and hi_dur < lo_dur:
+                kept[i] = False
+                break
+    after_harm = [n for ok, n in zip(kept, merged) if ok]
+    after_harmonics = len(after_harm)
+
+    # Filtre durée minimale (après anti-harmoniques).
+    after_harm = [
+        n for n in after_harm if (float(n["end"]) - float(n["start"])) >= float(min_duration_seconds)
+    ]
+    after_harmonics = len(after_harm)
+
+    # 3.4 Lead mode (optionnel): à chaque start (tolérance), garder la note la plus confiante.
+    final = after_harm
+    if lead_mode and final:
+        final.sort(key=lambda x: x["start"])
+        groups: List[List[Dict[str, Any]]] = []
+        current = [final[0]]
+        for n in final[1:]:
+            if abs(float(n["start"]) - float(current[-1]["start"])) <= 0.02:
+                current.append(n)
+            else:
+                groups.append(current)
+                current = [n]
+        groups.append(current)
+        final = [max(g, key=lambda x: float(x["confidence"])) for g in groups]
+    after_lead = len(final)
+
+    stats = {
+        "counts": {
+            "raw": raw_count,
+            "afterFilter": after_filter,
+            "afterMerge": after_merge,
+            "afterHarmonics": after_harmonics,
+            "afterLead": after_lead,
+        },
+        "params": {
+            "confidenceThreshold": float(confidence_threshold),
+            "mergeGapMs": int(round(merge_gap_seconds * 1000.0)),
+            "minDurationMs": int(round(min_duration_seconds * 1000.0)),
+            "harmonicWindowMs": int(round(harmonic_window_seconds * 1000.0)),
+            "leadMode": bool(lead_mode),
+        },
+    }
+    return final, stats
+
+
+def quantize_basic_pitch_notes(
+    notes: List[Dict[str, Any]],
+    *,
+    tempo_bpm: float,
+    divisions: int = 8,
+    grid_ticks: int = 4,
+    min_duration_ticks: int = 1,
+) -> List[NoteEvent]:
+    """Quantifie start/end sur une grille en ticks, puis reconvertit en secondes."""
+    if not notes:
+        return []
+    tempo = float(tempo_bpm or SETTINGS.default_tempo_bpm)
+    if tempo <= 0:
+        tempo = float(SETTINGS.default_tempo_bpm)
+    seconds_per_beat = 60.0 / tempo
+    divisions = max(1, int(divisions))
+    grid_ticks = max(1, int(grid_ticks))
+    min_duration_ticks = max(1, int(min_duration_ticks))
+
+    out: List[NoteEvent] = []
+    for n in notes:
+        start_s = float(n["start"])
+        end_s = float(n["end"])
+        pitch = int(n["pitch"])
+        conf = float(n.get("confidence", 0.0))
+        start_tick = int(round(start_s / seconds_per_beat * divisions))
+        end_tick = int(round(end_s / seconds_per_beat * divisions))
+        start_tick = int(round(start_tick / grid_ticks) * grid_ticks)
+        end_tick = int(round(end_tick / grid_ticks) * grid_ticks)
+        end_tick = max(end_tick, start_tick + min_duration_ticks)
+        duration_tick = end_tick - start_tick
+        start_q = float(start_tick) / float(divisions) * seconds_per_beat
+        dur_q = float(duration_tick) / float(divisions) * seconds_per_beat
+        velocity = int(clamp(round(conf * 127.0), 24, 127))
+        out.append(NoteEvent(start=float(start_q), duration=float(dur_q), pitch=pitch, velocity=velocity))
+    out.sort(key=lambda ev: (ev.start, ev.pitch))
+    return out
 
 
 def post_process_notes(
@@ -1529,8 +1868,9 @@ def build_tab_json(
     tempo_bpm: float,
     tempo_source: str,
     warnings: List[str],
+    divisions: int = DEFAULT_DIVISIONS,
 ) -> Tuple[Dict[str, object], int]:
-    divisions = DEFAULT_DIVISIONS
+    divisions = max(1, int(divisions))
     seconds_per_beat = _seconds_per_beat(tempo_bpm)
     events = _build_measure_events(
         tab_notes,
@@ -1568,8 +1908,9 @@ def build_score_json(
     tempo_bpm: float,
     tempo_source: str,
     warnings: Optional[List[str]] = None,
+    divisions: int = DEFAULT_DIVISIONS,
 ) -> Tuple[Dict[str, object], int]:
-    divisions = DEFAULT_DIVISIONS
+    divisions = max(1, int(divisions))
     seconds_per_beat = _seconds_per_beat(tempo_bpm)
     written_shift = _determine_written_octave_shift(note_events)
 
@@ -1703,8 +2044,11 @@ def write_tab_outputs(
     logger=None,
     measures_per_system: int = 2,
     pretty_export: bool = False,
+    divisions: int = DEFAULT_DIVISIONS,
 ) -> Tuple[Dict[str, object], int, List[str], int]:
-    tab_json, total_notes = build_tab_json(tab_notes, tuning, capo, quality, tempo_bpm, tempo_source, warnings)
+    tab_json, total_notes = build_tab_json(
+        tab_notes, tuning, capo, quality, tempo_bpm, tempo_source, warnings, divisions=divisions
+    )
     if total_notes == 0:
         raise RuntimeError("Aucune tablature générée (pas de notes exploitables).")
     write_json(tab_json_path, tab_json)

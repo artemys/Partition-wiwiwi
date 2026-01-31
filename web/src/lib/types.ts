@@ -46,14 +46,23 @@ export type JobDebugResponse = {
     scoreMusicxml?: string | null;
     scorePdf?: string | null;
     logs?: string | null;
+    debugJson?: string | null;
+    stemGuitarWav?: string | null;
+    rawBasicPitchJson?: string | null;
+    cleanNotesJson?: string | null;
   };
   sizes: {
     pdf?: number | null;
     musicxml?: number | null;
     tabTxt?: number | null;
     tabJson?: number | null;
+    scoreJson?: number | null;
     scoreMusicxml?: number | null;
     scorePdf?: number | null;
+    debugJson?: number | null;
+    stemGuitarWav?: number | null;
+    rawBasicPitchJson?: number | null;
+    cleanNotesJson?: number | null;
   };
   lastMuseScore?: {
     command: string;
@@ -86,7 +95,7 @@ export type JobDebugResponse = {
   handSpan?: number | null;
   preferLowFrets?: boolean | null;
   fingeringDebugUrl?: string | null;
-  transcriptionMode?: "monophonic_tuner" | "polyphonic_basic_pitch" | null;
+  transcriptionMode?: "best_free" | "monophonic_tuner" | "polyphonic_basic_pitch" | null;
   tempoDetected?: number | null;
   avgVoicedRatio?: number | null;
   instabilityRatio?: number | null;
@@ -96,4 +105,14 @@ export type JobDebugResponse = {
   notesCount?: number | null;
   warnings?: string[] | null;
   writtenOctaveShift?: number | null;
+  stemUsed?: string | null;
+  stemPreprocess?: Record<string, unknown> | null;
+  basicPitchNotesCountRaw?: number | null;
+  basicPitchNotesCountAfterFilter?: number | null;
+  basicPitchNotesCountAfterMerge?: number | null;
+  basicPitchNotesCountAfterHarmonics?: number | null;
+  basicPitchNotesCountAfterLead?: number | null;
+  basicPitchNotesCountQuantized?: number | null;
+  quantizationGridTicks?: number | null;
+  quantizationDivisions?: number | null;
 };

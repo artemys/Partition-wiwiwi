@@ -24,14 +24,20 @@ from .pipeline import (
     download_youtube_audio,
     ensure_dependencies,
     estimate_tempo,
+    estimate_tempo_from_wav,
     ffprobe_duration,
     f0_to_note_events,
     load_midi_notes,
     map_notes_to_tab,
+    post_process_basic_pitch_notes,
     post_process_notes,
+    preprocess_guitar_stem,
+    quantize_basic_pitch_notes,
     render_musicxml_to_pdf,
     run_basic_pitch,
+    run_basic_pitch_notes,
     run_demucs,
+    run_demucs_pick_stem,
     run_pitch_tracker,
     trim_wav,
     write_score_musicxml,
@@ -213,6 +219,124 @@ def _process_basic_pitch_transcription(
     )
 
 
+def _process_best_free_transcription(
+    job: Job,
+    stem_path: str,
+    logger,
+    warnings: List[str],
+    output_dir: str,
+    *,
+    confidence_threshold: float = 0.35,
+    divisions: int = 8,
+) -> TranscriptionResult:
+    """Pipeline recommandé: stem guitare (pré-traité) -> BasicPitch raw -> post-process -> tempo -> quantize."""
+    # Tempo détecté sur l'audio (pas sur MIDI BasicPitch, qui est typiquement à un tempo minimal).
+    tempo_bpm, tempo_source = estimate_tempo_from_wav(stem_path, logger)
+    tempo_detected = tempo_bpm if tempo_source != "default" else None
+    if tempo_source == "default":
+        warnings.append("Tempo inconnu, valeur par défaut utilisée.")
+
+    basic_pitch_dir = os.path.join(output_dir, "basic_pitch")
+    ensure_dir(basic_pitch_dir)
+    raw_path = os.path.join(output_dir, "raw_basic_pitch.json")
+    clean_path = os.path.join(output_dir, "clean_notes.json")
+
+    raw_notes: List[Dict[str, object]] = []
+    midi_path = os.path.join(output_dir, "output.mid")
+
+    try:
+        raw_notes_any, midi_generated = run_basic_pitch_notes(stem_path, basic_pitch_dir, logger=logger)
+        raw_notes = [dict(item) for item in raw_notes_any]
+        shutil.copyfile(midi_generated, midi_path)
+    except Exception as exc:  # noqa: BLE001
+        # Fallback: CLI -> MIDI, on synthétise une confidence via velocity.
+        warnings.append(f"Basic Pitch python indisponible, fallback CLI/MIDI ({exc}).")
+        midi_generated = run_basic_pitch(stem_path, basic_pitch_dir, logger)
+        shutil.copyfile(midi_generated, midi_path)
+        midi_notes, _ = load_midi_notes(midi_path)
+        for ev in midi_notes:
+            raw_notes.append(
+                {
+                    "start": float(ev.start),
+                    "end": float(ev.start + ev.duration),
+                    "pitch": int(ev.pitch),
+                    "amplitude": float(clamp(ev.velocity / 127.0, 0.0, 1.0)),
+                    "confidence": float(clamp(ev.velocity / 127.0, 0.0, 1.0)),
+                }
+            )
+
+    write_json(
+        raw_path,
+        {
+            "notes": raw_notes,
+        },
+    )
+
+    cleaned_notes, clean_stats = post_process_basic_pitch_notes(
+        raw_notes,
+        confidence_threshold=confidence_threshold,
+        lead_mode=False,
+    )
+
+    write_json(
+        clean_path,
+        {
+            "notes": cleaned_notes,
+            "stats": clean_stats,
+        },
+    )
+
+    # Quantization: divisions=8, grille dépend de la qualité.
+    quality = (job.quality or "fast").lower()
+    grid_ticks = 4 if quality == "fast" else 2  # spb/2 ou spb/4
+    quantized = quantize_basic_pitch_notes(
+        cleaned_notes,
+        tempo_bpm=tempo_bpm,
+        divisions=divisions,
+        grid_ticks=grid_ticks,
+        min_duration_ticks=1,
+    )
+
+    # Metrics pour compute_confidence (fallback simple + densité).
+    metrics = {
+        "short_ratio": 0.0,
+        "out_of_range_ratio": 0.0,
+    }
+
+    # On expose aussi quelques infos de debug via `metrics` (agrégé) pour `debug.json`.
+    counts = (clean_stats or {}).get("counts") if isinstance(clean_stats, dict) else None
+    if not isinstance(counts, dict):
+        counts = {}
+    metrics.update(
+        {
+            "bestFreeRawNotes": float(len(raw_notes)),
+            "bestFreeAfterFilter": float(counts.get("afterFilter") or 0),
+            "bestFreeAfterMerge": float(counts.get("afterMerge") or 0),
+            "bestFreeAfterHarmonics": float(counts.get("afterHarmonics") or 0),
+            "bestFreeAfterLead": float(counts.get("afterLead") or 0),
+            "bestFreeCleanNotes": float(len(cleaned_notes)),
+            "bestFreeQuantizedNotes": float(len(quantized)),
+            "bestFreeGridTicks": float(grid_ticks),
+            "bestFreeDivisions": float(divisions),
+        }
+    )
+
+    if not quantized:
+        raise RuntimeError("Aucune note exploitable après post-traitement best_free.")
+
+    return TranscriptionResult(
+        notes=quantized,
+        metrics=metrics,
+        tempo_bpm=tempo_bpm,
+        tempo_source=tempo_source,
+        detected_tempo=tempo_detected,
+        extraction_stats=None,
+        f0_preview_path=None,
+        diagnostics=None,
+        midi_path=midi_path,
+    )
+
+
 def process_job(job_id: str) -> None:
     db = SessionLocal()
     job = db.query(Job).filter(Job.id == job_id).first()
@@ -275,18 +399,64 @@ def process_job(job_id: str) -> None:
             warnings.append("Audio tronqué via timecode.")
 
         candidate_path = wav_path
+        stem_used = None
+        stem_preprocess = None
+        stem_guitar_path = None
         if not job.input_is_isolated:
             _stage(db, job_id, "ISOLATION_DEMUCS", 35, logger, "Isolation de la guitare (Demucs).")
             demucs_dir = os.path.join(output_dir, "demucs")
             ensure_dir(demucs_dir)
-            candidate_path = run_demucs(wav_path, demucs_dir, logger)
+            if job.transcription_mode == "best_free":
+                candidate_path, stem_used = run_demucs_pick_stem(wav_path, demucs_dir, logger, preferred="other")
+            else:
+                candidate_path = run_demucs(wav_path, demucs_dir, logger)
         else:
             warnings.append("Piste guitare isolée: Demucs ignoré.")
+
+        if job.transcription_mode == "best_free":
+            _stage(
+                db,
+                job_id,
+                "PREPROCESS_GUITAR_STEM",
+                45,
+                logger,
+                "Pré-traitement audio (filtre guitare + normalisation).",
+            )
+            stem_guitar_path = os.path.join(output_dir, "stem_guitar.wav")
+            stem_preprocess = preprocess_guitar_stem(
+                candidate_path,
+                stem_guitar_path,
+                logger=logger,
+                hp_hz=80.0,
+                lp_hz=7000.0,
+                target_rms_dbfs=-18.0,
+                apply_gate=(job.quality or "").lower() == "fast",
+            )
+            candidate_path = stem_guitar_path
 
         pitch_mode = "monophonic"
         fallback_stats = None
         fallback_preview = None
-        if job.transcription_mode == "monophonic_tuner":
+        if job.transcription_mode == "best_free":
+            _stage(
+                db,
+                job_id,
+                "TRANSCRIPTION_BEST_FREE",
+                55,
+                logger,
+                "Transcription best_free (Demucs + Basic Pitch + post-processing).",
+            )
+            result = _process_best_free_transcription(
+                job,
+                candidate_path,
+                logger,
+                warnings,
+                output_dir,
+                confidence_threshold=0.35,
+                divisions=8,
+            )
+            pitch_mode = "best_free"
+        elif job.transcription_mode == "monophonic_tuner":
             _stage(db, job_id, "TRANSCRIPTION_MONOPHONIC", 55, logger, "Transcription monophonique type accordeur.")
             try:
                 result = _process_monophonic_transcription(
@@ -339,7 +509,7 @@ def process_job(job_id: str) -> None:
             "Nettoyage et quantification des notes.",
         )
 
-        divisions = DEFAULT_DIVISIONS
+        divisions = 8 if job.transcription_mode == "best_free" else DEFAULT_DIVISIONS
         measure_ticks = divisions * 4
         logger.info(
             "Préparation score JSON : tempo=%s, divisions=%s, measureTicks=%s",
@@ -353,6 +523,7 @@ def process_job(job_id: str) -> None:
             tempo_used,
             tempo_source,
             warnings,
+            divisions=divisions,
         )
         score_json_path = os.path.join(output_dir, "score.json")
         write_json(score_json_path, score_json)
@@ -388,6 +559,7 @@ def process_job(job_id: str) -> None:
             tab_txt_path=tab_txt_path,
             tab_json_path=tab_json_path,
             logger=logger,
+            divisions=divisions,
         )
         warnings.extend(tab_warnings)
 
@@ -463,6 +635,24 @@ def process_job(job_id: str) -> None:
             "preferLowFrets": bool(job.prefer_low_frets),
             "fingeringDebugPath": fingering_debug_path,
         }
+        if job.transcription_mode == "best_free":
+            debug_info.update(
+                {
+                    "stemUsed": stem_used,
+                    "stemGuitarPath": stem_guitar_path,
+                    "stemPreprocess": stem_preprocess,
+                    "basicPitchNotesCountRaw": int(metrics.get("bestFreeRawNotes") or 0),
+                    "basicPitchNotesCountAfterFilter": int(metrics.get("bestFreeAfterFilter") or 0),
+                    "basicPitchNotesCountAfterMerge": int(metrics.get("bestFreeAfterMerge") or 0),
+                    "basicPitchNotesCountAfterHarmonics": int(metrics.get("bestFreeAfterHarmonics") or 0),
+                    "basicPitchNotesCountAfterLead": int(metrics.get("bestFreeAfterLead") or 0),
+                    "basicPitchNotesCountQuantized": int(metrics.get("bestFreeQuantizedNotes") or 0),
+                    "quantizationGridTicks": int(metrics.get("bestFreeGridTicks") or 0),
+                    "quantizationDivisions": int(metrics.get("bestFreeDivisions") or divisions),
+                    "rawBasicPitchPath": os.path.join(output_dir, "raw_basic_pitch.json"),
+                    "cleanNotesPath": os.path.join(output_dir, "clean_notes.json"),
+                }
+            )
         debug_info.update(
             {
                 "transcriptionMode": job.transcription_mode,
