@@ -12,6 +12,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.tabscore.app.R
 import com.tabscore.app.domain.model.OutputType
+import com.tabscore.app.domain.model.TranscriptionStatus
 import com.tabscore.app.ui.util.ShareHelper
 import com.tabscore.app.ui.viewmodel.DetailViewModel
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +93,15 @@ fun DetailScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(text = transcription?.title ?: "")
+            if (transcription?.status == TranscriptionStatus.PENDING ||
+                transcription?.status == TranscriptionStatus.RUNNING
+            ) {
+                LinearProgressIndicator(
+                    progress = { (transcription?.progress ?: 0) / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(text = transcription?.stage ?: "Traitement en cours")
+            }
             Text(
                 text = when (transcription?.outputType) {
                     OutputType.SCORE -> stringResource(id = R.string.preview_score)
