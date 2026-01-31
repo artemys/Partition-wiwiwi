@@ -19,6 +19,7 @@ class Settings:
     db_url: str = os.getenv("TABSERVER_DB_URL", "")
     redis_url: str = os.getenv("TABSERVER_REDIS_URL", "redis://localhost:6379/0")
     public_base_url: str = os.getenv("TABSERVER_PUBLIC_URL", "http://localhost:8000")
+    frontend_origin: str = os.getenv("TABSERVER_FRONTEND_URL", "http://localhost:3000")
     max_upload_mb: int = int(os.getenv("TABSERVER_MAX_UPLOAD_MB", "50"))
     max_duration_seconds: int = int(os.getenv("TABSERVER_MAX_DURATION_SECONDS", str(12 * 60)))
     sample_rate: int = int(os.getenv("TABSERVER_SAMPLE_RATE", "22050"))
@@ -40,6 +41,7 @@ SETTINGS = Settings(
     db_url=_db_url,
     redis_url=_raw.redis_url,
     public_base_url=_raw.public_base_url,
+    frontend_origin=_raw.frontend_origin,
     max_upload_mb=_raw.max_upload_mb,
     max_duration_seconds=_raw.max_duration_seconds,
     sample_rate=_raw.sample_rate,

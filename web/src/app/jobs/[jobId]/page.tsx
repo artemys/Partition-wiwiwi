@@ -8,9 +8,15 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { deleteJob, getJobResult, getJobStatus } from "@/lib/api";
+import { deleteJob, getJobDebug, getJobResult, getJobStatus } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { getPreferredExportFormat } from "@/lib/storage";
+
+type PdfFetchInfo = {
+  status: number;
+  contentType: string | null;
+  contentLength: number | null;
+};
 
 export default function JobDetailsPage() {
   const params = useParams();
@@ -18,6 +24,9 @@ export default function JobDetailsPage() {
   const jobId = Array.isArray(params.jobId) ? params.jobId[0] : params.jobId;
   const resolvedJobId = typeof jobId === "string" ? jobId : "";
   const [tabPreview, setTabPreview] = useState<string | null>(null);
+  const [pdfObjectUrl, setPdfObjectUrl] = useState<string | null>(null);
+  const [pdfFetchInfo, setPdfFetchInfo] = useState<PdfFetchInfo | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const {
     data: status,
@@ -40,6 +49,17 @@ export default function JobDetailsPage() {
     enabled: status?.status === "DONE" && Boolean(resolvedJobId),
   });
 
+  const {
+    data: debugInfo,
+    isLoading: isDebugLoading,
+    isError: isDebugError,
+  } = useQuery({
+    queryKey: ["job-debug", resolvedJobId],
+    queryFn: () => getJobDebug(resolvedJobId),
+    enabled: status?.status === "DONE" && Boolean(resolvedJobId),
+    retry: false,
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteJob(resolvedJobId),
     onSuccess: () => {
@@ -60,6 +80,23 @@ export default function JobDetailsPage() {
     if (preference === "midi" && result.midiUrl) return result.midiUrl;
     return result.pdfUrl || result.musicXmlUrl || result.tabTxtUrl || result.tabJsonUrl || result.midiUrl || null;
   }, [result]);
+
+  const pdfUrl = result?.pdfUrl ?? null;
+
+  const handleOpenPdf = () => {
+    if (!pdfUrl) {
+      return;
+    }
+    if (pdfFetchInfo?.status === 404) {
+      toast.error("PDF introuvable (404).");
+    } else if (pdfFetchInfo && (pdfFetchInfo.contentType ?? "").split(";")[0] !== "application/pdf") {
+      toast.error("La ressource n'est pas un PDF.");
+    }
+    window.open(pdfUrl, "_blank", "noopener,noreferrer");
+  };
+
+  const formatBytes = (value?: number | null) =>
+    value != null ? `${value.toLocaleString("fr-FR")} octets` : "—";
 
   useEffect(() => {
     const tabUrl = result?.tabTxtUrl;
@@ -84,6 +121,68 @@ export default function JobDetailsPage() {
       cancelled = true;
     };
   }, [result?.tabTxtUrl]);
+
+  useEffect(() => {
+    if (!pdfUrl) {
+      setPdfObjectUrl(null);
+      setPdfFetchInfo(null);
+      setPdfError(null);
+      return;
+    }
+    let objectUrl: string | null = null;
+    const controller = new AbortController();
+    setPdfObjectUrl(null);
+    setPdfFetchInfo(null);
+    setPdfError(null);
+
+    const loadPdf = async () => {
+      try {
+        const response = await fetch(pdfUrl, { signal: controller.signal });
+        const contentType = response.headers.get("content-type");
+        const contentLengthHeader = response.headers.get("content-length");
+        const parsedLength = contentLengthHeader ? Number(contentLengthHeader) : null;
+        const contentLength = parsedLength !== null && !Number.isNaN(parsedLength) ? parsedLength : null;
+        const info: PdfFetchInfo = {
+          status: response.status,
+          contentType,
+          contentLength,
+        };
+        if (controller.signal.aborted) {
+          return;
+        }
+        setPdfFetchInfo(info);
+        if (!response.ok) {
+          throw new Error(`Réponse HTTP ${response.status}`);
+        }
+        if ((contentType ?? "").split(";")[0] !== "application/pdf") {
+          throw new Error("Ressource reçue n'est pas un PDF.");
+        }
+        const blob = await response.blob();
+        if (controller.signal.aborted) {
+          return;
+        }
+        objectUrl = URL.createObjectURL(blob);
+        setPdfObjectUrl(objectUrl);
+        setPdfError(null);
+      } catch (err) {
+        if (controller.signal.aborted) {
+          return;
+        }
+        const message = err instanceof Error && err.message ? err.message : "Impossible de charger le PDF.";
+        setPdfError(message);
+        setPdfObjectUrl(null);
+      }
+    };
+
+    void loadPdf();
+
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [pdfUrl]);
 
   if (!resolvedJobId) {
     return <Card>Job introuvable.</Card>;
@@ -172,10 +271,7 @@ export default function JobDetailsPage() {
               </Button>
             )}
             {result?.pdfUrl && (
-              <Button
-                variant="secondary"
-                onClick={() => window.open(result.pdfUrl ?? undefined, "_blank", "noopener,noreferrer")}
-              >
+              <Button variant="secondary" onClick={handleOpenPdf}>
                 Ouvrir PDF
               </Button>
             )}
@@ -184,30 +280,108 @@ export default function JobDetailsPage() {
       </Card>
 
       {status.status === "DONE" && (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="space-y-3">
+              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation TAB</h2>
+              {result?.tabTxtUrl ? (
+                <pre className="max-h-[520px] overflow-auto rounded-xl bg-zinc-900 p-4 text-xs text-zinc-100">
+                  {tabPreview ?? "Chargement du TAB..."}
+                </pre>
+              ) : (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucune tablature disponible.</p>
+              )}
+            </Card>
+            <Card className="space-y-3">
+              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation PDF</h2>
+              {result?.pdfUrl ? (
+                <div className="min-h-[520px] overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800">
+                  {pdfObjectUrl ? (
+                    <embed
+                      src={pdfObjectUrl}
+                      type="application/pdf"
+                      className="h-[520px] w-full"
+                      title="Prévisualisation PDF"
+                    />
+                  ) : pdfError ? (
+                    <div className="flex flex-col items-center justify-center gap-3 p-6 text-sm text-zinc-600 dark:text-zinc-400">
+                      <p>{pdfError}</p>
+                      <Button variant="ghost" onClick={handleOpenPdf}>
+                        Ouvrir dans un nouvel onglet
+                      </Button>
+                    </div>
+                  ) : (
+                    <p className="p-6 text-sm text-zinc-500 dark:text-zinc-400">Chargement du PDF…</p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucun PDF disponible.</p>
+              )}
+            </Card>
+          </div>
           <Card className="space-y-3">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation TAB</h2>
-            {result?.tabTxtUrl ? (
-              <pre className="max-h-[520px] overflow-auto rounded-xl bg-zinc-900 p-4 text-xs text-zinc-100">
-                {tabPreview ?? "Chargement du TAB..."}
-              </pre>
-            ) : (
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucune tablature disponible.</p>
-            )}
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Info debug</h2>
+            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
+              <p className="text-xs uppercase text-zinc-500 dark:text-zinc-400">Ressource PDF</p>
+              <div className="flex justify-between">
+                <span>pdfUrl</span>
+                <span className="font-mono text-xs text-zinc-700 dark:text-zinc-200 break-all">
+                  {result?.pdfUrl ?? "—"}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span>Status HTTP</span>
+                <span>{pdfFetchInfo?.status ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Content-Type</span>
+                <span>{pdfFetchInfo?.contentType ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Content-Length</span>
+                <span>{formatBytes(pdfFetchInfo?.contentLength)}</span>
+              </div>
+            </div>
+            <div className="space-y-2 text-sm text-zinc-600 dark:text-zinc-300">
+              {isDebugLoading && <p>Chargement des informations de debug…</p>}
+              {isDebugError && <p>Impossible de charger les infos de debug.</p>}
+              {debugInfo && (
+                <div className="space-y-2 rounded-xl border border-zinc-200 p-3 text-xs text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+                  <div>
+                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Chemins réels</p>
+                    <p className="font-mono break-all">PDF: {debugInfo.paths.pdf ?? "—"}</p>
+                    <p className="font-mono break-all">MusicXML: {debugInfo.paths.musicxml ?? "—"}</p>
+                    <p className="font-mono break-all">TAB: {debugInfo.paths.tabTxt ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">Tailles</p>
+                    <p>PDF: {formatBytes(debugInfo.sizes.pdf)}</p>
+                    <p>MusicXML: {formatBytes(debugInfo.sizes.musicxml)}</p>
+                    <p>TAB: {formatBytes(debugInfo.sizes.tabTxt)}</p>
+                  </div>
+                  {debugInfo.lastMuseScore && (
+                    <div>
+                      <p className="text-[10px] uppercase text-zinc-500 dark:text-zinc-400">
+                        Dernière commande MuseScore
+                      </p>
+                      <p className="font-mono text-[11px] break-all">{debugInfo.lastMuseScore.command}</p>
+                      {debugInfo.lastMuseScore.stdout && (
+                        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                          stdout: {debugInfo.lastMuseScore.stdout}
+                        </p>
+                      )}
+                      {debugInfo.lastMuseScore.stderr && (
+                        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+                          stderr: {debugInfo.lastMuseScore.stderr}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </Card>
-          <Card className="space-y-3">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prévisualisation PDF</h2>
-            {result?.pdfUrl ? (
-              <iframe
-                src={result.pdfUrl}
-                className="h-[520px] w-full rounded-xl border border-zinc-200 dark:border-zinc-800"
-                title="Prévisualisation PDF"
-              />
-            ) : (
-              <p className="text-sm text-zinc-500 dark:text-zinc-400">Aucun PDF disponible.</p>
-            )}
-          </Card>
-        </div>
+        </>
       )}
     </div>
   );

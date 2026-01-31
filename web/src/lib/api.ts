@@ -1,4 +1,4 @@
-import type { JobResultResponse, JobStatusResponse, LibraryResponse } from "./types";
+import type { JobResultResponse, JobStatusResponse, LibraryResponse, JobDebugResponse } from "./types";
 import { getApiUrlOverride } from "./storage";
 
 const DEFAULT_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -92,4 +92,8 @@ export function getLibrary() {
 
 export function deleteJob(jobId: string) {
   return fetchJson<{ status: string }>(buildUrl(`/jobs/${jobId}`), { method: "DELETE" });
+}
+
+export function getJobDebug(jobId: string) {
+  return fetchJson<JobDebugResponse>(buildUrl(`/jobs/${jobId}/debug`));
 }

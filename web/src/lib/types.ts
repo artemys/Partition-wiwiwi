@@ -30,3 +30,24 @@ export type LibraryResponse = {
   nextCursor?: string | null;
   total?: number | null;
 };
+
+export type JobDebugResponse = {
+  paths: {
+    pdf?: string | null;
+    musicxml?: string | null;
+    tabTxt?: string | null;
+    tabJson?: string | null;
+    logs?: string | null;
+  };
+  sizes: {
+    pdf?: number | null;
+    musicxml?: number | null;
+    tabTxt?: number | null;
+    tabJson?: number | null;
+  };
+  lastMuseScore?: {
+    command: string;
+    stdout?: string | null;
+    stderr?: string | null;
+  } | null;
+};

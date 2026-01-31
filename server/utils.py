@@ -3,7 +3,7 @@ import logging
 import os
 import shutil
 import subprocess
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from .config import SETTINGS
 
@@ -67,6 +67,31 @@ def run_cmd(
         raise RuntimeError(
             f"Commande échouée: {' '.join(args)} (code {result.returncode}). Détails: {details}"
         )
+
+
+def parse_last_musescore_run(log_path: str) -> Optional[Dict[str, Optional[str]]]:
+    if not os.path.exists(log_path):
+        return None
+    last_entry: Optional[Dict[str, Optional[str]]] = None
+    current: Optional[Dict[str, Optional[str]]] = None
+    with open(log_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if "Command: " in line:
+                command = line.split("Command: ", 1)[1].strip()
+                if "musescore" in command.lower():
+                    current = {"command": command, "stdout": None, "stderr": None}
+                    last_entry = current
+                else:
+                    current = None
+                continue
+            if current is None:
+                continue
+            if line.startswith("stdout: "):
+                current["stdout"] = line.split("stdout: ", 1)[1].strip()
+            elif line.startswith("stderr: "):
+                current["stderr"] = line.split("stderr: ", 1)[1].strip()
+    return last_entry
 
 
 def clamp(value: float, low: float, high: float) -> float:

@@ -24,15 +24,16 @@ from .schemas import (
 )
 from .pipeline import render_musicxml_to_pdf
 from .tasks import process_job
-from .utils import ensure_dir, get_job_logger
+from .utils import ensure_dir, get_job_logger, parse_last_musescore_run
 
 app = FastAPI(title="TabScore Backend")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[SETTINGS.frontend_origin],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Range"],
+    expose_headers=["Content-Length", "Content-Type", "Accept-Ranges"],
 )
 install_auth_middleware(app)
 
@@ -249,13 +250,56 @@ def get_job_result(job_id: str):
     return response
 
 
+@app.get("/jobs/{job_id}/debug")
+def get_job_debug(job_id: str):
+    db = SessionLocal()
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        db.close()
+        raise HTTPException(status_code=404, detail="Job introuvable.")
+
+    def _absolute(path: Optional[str]) -> Optional[str]:
+        if not path:
+            return None
+        return os.path.abspath(path)
+
+    def _size(path: Optional[str]) -> Optional[int]:
+        if not path:
+            return None
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+
+    debug_paths = {
+        "pdf": _absolute(job.pdf_path),
+        "musicxml": _absolute(job.musicxml_path),
+        "tabTxt": _absolute(job.tab_txt_path),
+        "tabJson": _absolute(job.tab_json_path),
+        "logs": _absolute(job.logs_path),
+    }
+    debug_sizes = {
+        "pdf": _size(job.pdf_path),
+        "musicxml": _size(job.musicxml_path),
+        "tabTxt": _size(job.tab_txt_path),
+        "tabJson": _size(job.tab_json_path),
+    }
+    last_musescore = parse_last_musescore_run(job.logs_path) if job.logs_path else None
+    db.close()
+    return {
+        "paths": debug_paths,
+        "sizes": debug_sizes,
+        "lastMuseScore": last_musescore,
+    }
+
+
 @app.get("/files/{job_id}/{file_name}")
 def download_file(job_id: str, file_name: str):
     db = SessionLocal()
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         db.close()
-        return {"error": "Fichier indisponible"}
+        raise HTTPException(status_code=404, detail="Job introuvable.")
     path_map = {
         "tab.txt": job.tab_txt_path,
         "tab.json": job.tab_json_path,
@@ -267,7 +311,7 @@ def download_file(job_id: str, file_name: str):
     target = path_map.get(file_name)
     db.close()
     if not target or not os.path.exists(target):
-        return {"error": "Fichier indisponible"}
+        raise HTTPException(status_code=404, detail="Fichier indisponible.")
     media_type = "application/octet-stream"
     if file_name.endswith(".txt"):
         media_type = "text/plain"
@@ -279,6 +323,13 @@ def download_file(job_id: str, file_name: str):
         media_type = "audio/midi"
     elif file_name.endswith(".pdf"):
         media_type = "application/pdf"
+        safe_name = os.path.basename(file_name)
+        headers = {
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Cache-Control": "no-store",
+            "Accept-Ranges": "bytes",
+        }
+        return FileResponse(target, media_type=media_type, headers=headers)
     return FileResponse(target, media_type=media_type, filename=file_name)
 
 
