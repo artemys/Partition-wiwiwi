@@ -18,17 +18,15 @@
 - Fichiers persistés dans `server/data/{jobId}/` (input/output/logs).
 - Validation : formats audio, taille max, URL YouTube.
 
-### Android (/app)
-- UI Kotlin/Compose avec navigation Library / New / Details / Settings.
-- Persistance locale côté Android (Room) + modèles `Transcription`.
-- Consommation de l’API backend (fake ou réelle).
+### Android (supprimé)
+- L’app Android et sa logique locale ont été retirées du repo.
 
 ## Ce qui change (cible)
 
 ### Architecture monorepo
 - `/server` conservé et stabilisé (contrat API + persistance DB).
 - `/web` ajouté : app web Next.js (App Router, TS).
-- L’app Android est archivée dans `/android_legacy` (historique conservé).
+- L’app Android n’est plus présente dans le repo.
 
 ### Contrat API à stabiliser
 - `POST /jobs` : upload multipart OU `{ youtubeUrl }`

@@ -6,7 +6,6 @@ Application web pour transcrire un audio ou un lien YouTube en tablature et/ou p
 
 - `/server` : API FastAPI + worker RQ
 - `/web` : front-end Next.js (App Router)
-- `/android_legacy` : archive de l’ancienne app Android
 
 ## Démarrage rapide (local)
 
@@ -49,6 +48,3 @@ docker compose up --build
 
 Voir `.env.example` pour la liste complète.
 
-## Android legacy
-
-Le projet Android d’origine est archivé dans `/android_legacy`.
